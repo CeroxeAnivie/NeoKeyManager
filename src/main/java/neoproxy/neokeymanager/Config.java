@@ -2,9 +2,10 @@ package neoproxy.neokeymanager;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
 public class Config {
@@ -14,38 +15,25 @@ public class Config {
     public static String SSL_CRT_PATH = null;
     public static String SSL_KEY_PATH = null;
 
-    private static final String DEFAULT_CONFIG_CONTENT = """
-            # NeoKeyManager Configuration File
-            
-            # Service Port (Default: 8080)
-            SERVER_PORT=8080
-            
-            # Authorization Token (Must match NeoProxyServer's sync.cfg)
-            AUTH_TOKEN=default_token
-            
-            # Database Path (H2 Database file path)
-            DB_PATH=./neokey_db
-            
-            # SSL Configuration (Optional - Uncomment to enable HTTPS)
-            # Support Nginx/OpenSSL .pem, .crt, .key (PKCS#1 & PKCS#8)
-            # SSL_CRT_PATH=./cert/server.crt
-            # SSL_KEY_PATH=./cert/server.key
-            """;
-
     public static void load() {
-        File file = new File("server.properties");
+        File configFile = new File("server.properties");
 
-        // 【核心修复】文件不存在则自动创建
-        if (!file.exists()) {
-            createDefaultConfig(file);
+        if (!configFile.exists()) {
+            extractDefaultConfig(configFile);
         }
 
-        try (FileInputStream fis = new FileInputStream(file)) {
+        try (FileInputStream fis = new FileInputStream(configFile)) {
             Properties props = new Properties();
             props.load(fis);
 
             String p = props.getProperty("SERVER_PORT");
-            if (p != null) PORT = Integer.parseInt(p.trim());
+            if (p != null) {
+                try {
+                    PORT = Integer.parseInt(p.trim());
+                } catch (NumberFormatException e) {
+                    System.err.println("[Config] Invalid SERVER_PORT format, using default: " + PORT);
+                }
+            }
 
             String t = props.getProperty("AUTH_TOKEN");
             if (t != null) AUTH_TOKEN = t.trim();
@@ -53,23 +41,48 @@ public class Config {
             String d = props.getProperty("DB_PATH");
             if (d != null) DB_PATH = d.trim();
 
-            String crt = props.getProperty("SSL_CRT_PATH");
-            if (crt != null && !crt.isBlank()) SSL_CRT_PATH = crt.trim();
+            String crtPathRaw = props.getProperty("SSL_CRT_PATH");
+            String keyPathRaw = props.getProperty("SSL_KEY_PATH");
 
-            String key = props.getProperty("SSL_KEY_PATH");
-            if (key != null && !key.isBlank()) SSL_KEY_PATH = key.trim();
+            SSL_CRT_PATH = validateSslFile(crtPathRaw, "SSL_CRT_PATH");
+            SSL_KEY_PATH = validateSslFile(keyPathRaw, "SSL_KEY_PATH");
 
-        } catch (IOException | NumberFormatException e) {
-            System.err.println("[Config] Error loading config: " + e.getMessage());
+            if ((SSL_CRT_PATH != null && SSL_KEY_PATH == null) || (SSL_CRT_PATH == null && SSL_KEY_PATH != null)) {
+                System.err.println("[Config] SSL configuration is incomplete (missing pair). Downgrading to HTTP mode.");
+                SSL_CRT_PATH = null;
+                SSL_KEY_PATH = null;
+            }
+
+        } catch (IOException e) {
+            System.err.println("[Config] Critical Error loading server.properties: " + e.getMessage());
         }
     }
 
-    private static void createDefaultConfig(File file) {
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(DEFAULT_CONFIG_CONTENT.getBytes(StandardCharsets.UTF_8));
-            System.out.println("[Config] Created default server.properties");
+    private static String validateSslFile(String path, String configKey) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String trimmedPath = path.trim();
+        File file = new File(trimmedPath);
+        if (!file.exists() || !file.isFile()) {
+            System.err.println("[Config] Warning: " + configKey + " points to non-existent file: [" + trimmedPath + "]. Will verify SSL availability...");
+            return null;
+        }
+        return trimmedPath;
+    }
+
+    private static void extractDefaultConfig(File targetFile) {
+        System.out.println("[Config] 'server.properties' not found. Extracting default from resources...");
+        try (InputStream is = Config.class.getResourceAsStream("/server.properties")) {
+            if (is == null) {
+                System.err.println("[Config] CRITICAL: '/server.properties' NOT FOUND in JAR resources!");
+                return;
+            }
+            Files.copy(is, targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            System.out.println("[Config] Successfully extracted default config to: " + targetFile.getAbsolutePath());
         } catch (IOException e) {
-            System.err.println("[Config] Failed to create default config file: " + e.getMessage());
+            System.err.println("[Config] Failed to extract default configuration: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 }

@@ -1,6 +1,5 @@
 package neoproxy.neokeymanager;
 
-import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -27,7 +26,6 @@ public class Utils {
         return result;
     }
 
-    // 简易 JSON 生成器 (避免引入 Jackson/Gson 依赖)
     public static String toJson(Map<String, Object> map) {
         StringBuilder sb = new StringBuilder();
         sb.append("{");

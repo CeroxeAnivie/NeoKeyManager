@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit;
 
 public class SessionManager {
     private static final SessionManager INSTANCE = new SessionManager();
+    private static final long SESSION_TTL_MS = 10 * 60 * 1000L; // 10分钟
     // KeyName -> (NodeId -> Timestamp)
     private final ConcurrentHashMap<String, ConcurrentHashMap<String, Long>> sessions = new ConcurrentHashMap<>();
     private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -16,7 +17,6 @@ public class SessionManager {
         t.setDaemon(true);
         return t;
     });
-    private static final long SESSION_TTL_MS = 10 * 60 * 1000L; // 10分钟
 
     private SessionManager() {
         cleaner.scheduleAtFixedRate(this::cleanupDeadSessions, 1, 1, TimeUnit.MINUTES);
@@ -26,7 +26,6 @@ public class SessionManager {
         return INSTANCE;
     }
 
-    // 【重要】方法名确认：tryAcquireOrRefresh
     public synchronized boolean tryAcquireOrRefresh(String keyName, String nodeId, int maxConnections) {
         ConcurrentHashMap<String, Long> nodeMap = sessions.computeIfAbsent(keyName, k -> new ConcurrentHashMap<>());
 
@@ -38,13 +37,13 @@ public class SessionManager {
 
         // 2. 新连接 -> 检查容量
         if (nodeMap.size() >= maxConnections) {
-            Main.myConsole.warn("Session", "REJECT " + nodeId + " -> " + keyName + " (Limit: " + maxConnections + ")");
+            ServerLogger.warnWithSource("Session", "nkm.session.reject", nodeId, keyName, maxConnections);
             return false;
         }
 
         // 3. 注册
         nodeMap.put(nodeId, System.currentTimeMillis());
-        Main.myConsole.log("Session", "ACQUIRE " + keyName + " by " + nodeId + " (" + nodeMap.size() + "/" + maxConnections + ")");
+        ServerLogger.infoWithSource("Session", "nkm.session.acquire", keyName, nodeId, nodeMap.size(), maxConnections);
         return true;
     }
 
@@ -52,7 +51,7 @@ public class SessionManager {
         Map<String, Long> nodeMap = sessions.get(keyName);
         if (nodeMap != null) {
             if (nodeMap.remove(nodeId) != null) {
-                Main.myConsole.log("Session", "RELEASE " + keyName + " by " + nodeId);
+                ServerLogger.infoWithSource("Session", "nkm.session.release", keyName, nodeId);
             }
             if (nodeMap.isEmpty()) {
                 sessions.remove(keyName);
@@ -62,7 +61,7 @@ public class SessionManager {
 
     public void forceReleaseKey(String keyName) {
         if (sessions.remove(keyName) != null) {
-            Main.myConsole.log("Session", "FORCE CLEARED sessions for " + keyName);
+            ServerLogger.infoWithSource("Session", "nkm.session.forceClear", keyName);
         }
     }
 
@@ -83,13 +82,13 @@ public class SessionManager {
             while (nodeIt.hasNext()) {
                 Map.Entry<String, Long> e = nodeIt.next();
                 if (now - e.getValue() > SESSION_TTL_MS) {
-                    Main.myConsole.warn("Session", "TTL EXPIRED: " + key + " @ " + e.getKey());
+                    ServerLogger.warnWithSource("Session", "nkm.session.ttlExpired", key, e.getKey());
                     nodeIt.remove();
                     cleaned++;
                 }
             }
             if (nodes.isEmpty()) it.remove();
         }
-        if (cleaned > 0) Main.myConsole.log("Session", "Cleaned " + cleaned + " zombies.");
+        if (cleaned > 0) ServerLogger.infoWithSource("Session", "nkm.session.cleaned", cleaned);
     }
 }

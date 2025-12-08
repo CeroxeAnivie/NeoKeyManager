@@ -13,52 +13,61 @@ public class Database {
     private static final String DB_USER = "sa";
     private static final String DB_PASSWORD = "";
 
-    // 【核心修复】将 MM 改为 M，兼容输入 "2026/1/1" 和 "2026/12/05"
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy/M/d-HH:mm");
+    private static final String ANSI_RESET = "\u001B[0m";
+    private static final String ANSI_GREEN = "\u001B[32m";
+    private static final String ANSI_RED = "\u001B[31m";
 
     private static String getDbUrl() {
-        return "jdbc:h2:" + Config.DB_PATH + ";DB_CLOSE_ON_EXIT=FALSE";
+        return "jdbc:h2:" + Config.DB_PATH + ";DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000;DEFAULT_LOCK_TIMEOUT=10000";
     }
 
     public static void init() {
         try {
-            if (Main.myConsole != null) Main.myConsole.log("Database", "Loading H2 Driver...");
+            ServerLogger.infoWithSource("Database", "nkm.db.loadingDriver");
             Class.forName(DB_DRIVER);
 
             try (Connection conn = getConnection()) {
                 Statement stmt = conn.createStatement();
-
-                // 1. Key 表
                 stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS keys (
-                        name VARCHAR(50) PRIMARY KEY,
-                        balance DOUBLE NOT NULL,
-                        rate DOUBLE NOT NULL,
-                        expire_time VARCHAR(50),
-                        default_port VARCHAR(50) NOT NULL,
-                        max_conns INT NOT NULL DEFAULT 1,
-                        is_enable BOOLEAN DEFAULT TRUE,
-                        enable_web BOOLEAN DEFAULT FALSE
-                    )
-                """);
+                            CREATE TABLE IF NOT EXISTS keys (
+                                name VARCHAR(50) PRIMARY KEY,
+                                balance DOUBLE NOT NULL,
+                                rate DOUBLE NOT NULL,
+                                expire_time VARCHAR(50),
+                                default_port VARCHAR(50) NOT NULL,
+                                max_conns INT NOT NULL DEFAULT 1,
+                                is_enable BOOLEAN DEFAULT TRUE,
+                                enable_web BOOLEAN DEFAULT FALSE
+                            )
+                        """);
 
-                // 2. 向上兼容字段
-                try { stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS max_conns INT DEFAULT 1"); } catch (SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS is_enable BOOLEAN DEFAULT TRUE"); } catch (SQLException ignored) {}
-                try { stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS enable_web BOOLEAN DEFAULT FALSE"); } catch (SQLException ignored) {}
+                try {
+                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS max_conns INT DEFAULT 1");
+                } catch (SQLException ignored) {
+                }
+                try {
+                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS is_enable BOOLEAN DEFAULT TRUE");
+                } catch (SQLException ignored) {
+                }
+                try {
+                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS enable_web BOOLEAN DEFAULT FALSE");
+                } catch (SQLException ignored) {
+                }
 
-                // 3. Node Map 表
                 stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS node_ports (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        key_name VARCHAR(50),
-                        node_id VARCHAR(50),
-                        port VARCHAR(50),
-                        FOREIGN KEY (key_name) REFERENCES keys(name) ON DELETE CASCADE,
-                        UNIQUE(key_name, node_id)
-                    )
-                """);
-                if (Main.myConsole != null) Main.myConsole.log("Database", "Schema initialized and checked.");
+                            CREATE TABLE IF NOT EXISTS node_ports (
+                                id INT AUTO_INCREMENT PRIMARY KEY,
+                                key_name VARCHAR(50),
+                                node_id VARCHAR(50),
+                                port VARCHAR(50),
+                                FOREIGN KEY (key_name) REFERENCES keys(name) ON DELETE CASCADE,
+                                UNIQUE(key_name, node_id)
+                            )
+                        """);
+
+                stmt.execute("CREATE INDEX IF NOT EXISTS idx_keys_name ON keys(name)");
+                ServerLogger.infoWithSource("Database", "nkm.db.schemaInit");
             }
         } catch (Exception e) {
             System.err.println("[CRITICAL] Database initialization failed!");
@@ -79,10 +88,9 @@ public class Database {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setBoolean(1, enable);
             stmt.setString(2, name);
-            int rows = stmt.executeUpdate();
-            return rows > 0;
+            return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to set key status", e);
+            ServerLogger.error("Database", "nkm.db.setKeyStatus", e);
             return false;
         }
     }
@@ -93,10 +101,9 @@ public class Database {
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setBoolean(1, enable);
             stmt.setString(2, name);
-            int rows = stmt.executeUpdate();
-            return rows > 0;
+            return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to set web status", e);
+            ServerLogger.error("Database", "nkm.db.setWebStatus", e);
             return false;
         }
     }
@@ -116,8 +123,8 @@ public class Database {
         }
     }
 
-    public static void addKey(String name, double balance, double rate, String expireTime, String port, int maxConns) {
-        String sql = "MERGE INTO keys KEY(name) VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)";
+    public static boolean addKey(String name, double balance, double rate, String expireTime, String port, int maxConns) {
+        String sql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, is_enable, enable_web) VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE)";
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, name);
@@ -127,8 +134,10 @@ public class Database {
             stmt.setString(5, port);
             stmt.setInt(6, maxConns);
             stmt.executeUpdate();
+            return true;
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to add/update key " + name, e);
+            ServerLogger.error("Database", "nkm.db.addFail", e, name);
+            return false;
         }
     }
 
@@ -137,10 +146,30 @@ public class Database {
         List<Object> params = new ArrayList<>();
         boolean first = true;
 
-        if (balance != null) { if (!first) sql.append(", "); sql.append("balance = ?"); params.add(balance); first = false; }
-        if (rate != null) { if (!first) sql.append(", "); sql.append("rate = ?"); params.add(rate); first = false; }
-        if (expireTime != null) { if (!first) sql.append(", "); sql.append("expire_time = ?"); params.add(expireTime); first = false; }
-        if (enableWeb != null) { if (!first) sql.append(", "); sql.append("enable_web = ?"); params.add(enableWeb); first = false; }
+        if (balance != null) {
+            if (!first) sql.append(", ");
+            sql.append("balance = ?");
+            params.add(balance);
+            first = false;
+        }
+        if (rate != null) {
+            if (!first) sql.append(", ");
+            sql.append("rate = ?");
+            params.add(rate);
+            first = false;
+        }
+        if (expireTime != null) {
+            if (!first) sql.append(", ");
+            sql.append("expire_time = ?");
+            params.add(expireTime);
+            first = false;
+        }
+        if (enableWeb != null) {
+            if (!first) sql.append(", ");
+            sql.append("enable_web = ?");
+            params.add(enableWeb);
+            first = false;
+        }
 
         if (port != null) {
             if (!first) sql.append(", ");
@@ -162,32 +191,47 @@ public class Database {
             }
             stmt.executeUpdate();
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to update key " + name, e);
+            ServerLogger.error("Database", "nkm.db.updateFail", e, name);
         }
     }
 
     public static void addNodePort(String name, String nodeId, String port) {
-        String sql = "MERGE INTO node_ports KEY(key_name, node_id) VALUES (DEFAULT, ?, ?, ?)";
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, name);
-            stmt.setString(2, nodeId);
-            stmt.setString(3, port);
-            stmt.executeUpdate();
+        String delSql = "DELETE FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
+        String insertSql = "INSERT INTO node_ports (key_name, node_id, port) VALUES (?, ?, ?)";
+
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try (PreparedStatement delStmt = conn.prepareStatement(delSql);
+                 PreparedStatement insStmt = conn.prepareStatement(insertSql)) {
+                delStmt.setString(1, name);
+                delStmt.setString(2, nodeId);
+                delStmt.executeUpdate();
+
+                insStmt.setString(1, name);
+                insStmt.setString(2, nodeId);
+                insStmt.setString(3, port);
+                insStmt.executeUpdate();
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to map port", e);
+            ServerLogger.error("Database", "nkm.db.mapFail", e);
         }
     }
 
     public static boolean deleteNodeMap(String name, String nodeId) {
-        String sql = "DELETE FROM node_ports WHERE key_name = ? AND node_id = ?";
+        String sql = "DELETE FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, name);
             stmt.setString(2, nodeId);
             return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to delete node map", e);
+            ServerLogger.error("Database", "nkm.db.delMapFail", e);
             return false;
         }
     }
@@ -199,10 +243,10 @@ public class Database {
             stmt.setString(1, name);
             int count = stmt.executeUpdate();
             if (count > 0) {
-                Main.myConsole.log("Database", "Cleared " + count + " incompatible mappings for " + name);
+                ServerLogger.infoWithSource("Database", "nkm.db.clearedMaps", count, name);
             }
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to clear mappings", e);
+            ServerLogger.error("Database", "nkm.db.clearMapFail", e);
         }
     }
 
@@ -213,7 +257,7 @@ public class Database {
             stmt.setString(1, name);
             stmt.executeUpdate();
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to delete key " + name, e);
+            ServerLogger.error("Database", "nkm.db.delKeyFail", e, name);
         }
     }
 
@@ -225,7 +269,7 @@ public class Database {
             stmt.setString(2, name);
             stmt.executeUpdate();
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to deduct balance for " + name, e);
+            ServerLogger.error("Database", "nkm.db.deductFail", e, name);
         }
     }
 
@@ -269,60 +313,57 @@ public class Database {
             String sql = "SELECT * FROM keys ORDER BY name ASC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
+                String mapIndent = " ".repeat(46);
                 while (rs.next()) {
                     String name = rs.getString("name");
-                    boolean isEnable = rs.getBoolean("is_enable");
+                    boolean dbEnable = rs.getBoolean("is_enable");
                     boolean webEnable = rs.getBoolean("enable_web");
                     String expireTime = rs.getString("expire_time");
+                    double balance = rs.getDouble("balance");
 
-                    boolean isExpired = false;
-                    try {
-                        if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
-                            LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
-                            if (LocalDateTime.now().isAfter(expDate)) {
-                                isExpired = true;
+                    boolean isReallyEnabled = dbEnable;
+                    if (isReallyEnabled) {
+                        if (balance <= 0) {
+                            isReallyEnabled = false;
+                        } else if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
+                            try {
+                                LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
+                                if (LocalDateTime.now().isAfter(expDate)) isReallyEnabled = false;
+                            } catch (Exception ignored) {
                             }
                         }
-                    } catch (Exception ignored) {}
+                    }
 
-                    String statusFlag = isEnable ? (isExpired ? "[EXP]" : "[OK]") : "[DIS]";
-                    String webFlag = webEnable ? "✓" : "✗";
+                    String statusIcon = isReallyEnabled ? (ANSI_GREEN + "✔" + ANSI_RESET) : (ANSI_RED + "✘" + ANSI_RESET);
+                    String webIcon = webEnable ? "Yes" : "No";
 
-                    list.add(String.format("%-6s %-12s %-12.2f %-8.2f %-16s %-6d %-18s %-4s",
-                            statusFlag,
-                            name,
-                            rs.getDouble("balance"),
-                            rs.getDouble("rate"),
-                            rs.getString("default_port"),
-                            rs.getInt("max_conns"),
-                            expireTime,
-                            webFlag
-                    ));
+                    list.add(String.format("   %-16s %-12s %-12.2f %-8.2f %-16s %-6d %-18s %-4s",
+                            statusIcon, name, balance, rs.getDouble("rate"), rs.getString("default_port"),
+                            rs.getInt("max_conns"), expireTime, webIcon));
 
                     List<String> maps = mapInfo.get(name);
                     if (maps != null) {
                         for (int i = 0; i < maps.size(); i++) {
                             String m = maps.get(i);
                             String prefix = (i == maps.size() - 1) ? "└─" : "├─";
-                            list.add(String.format("       %s [MAP] %s", prefix, m));
+                            list.add(mapIndent + String.format("%s [MAP] %s", prefix, m));
                         }
                     }
                 }
             }
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Failed to list keys", e);
+            ServerLogger.error("Database", "nkm.db.listFail", e);
         }
         return list;
     }
 
     public static Map<String, Object> getKeyInfo(String name, String nodeId) {
         String sqlKey = "SELECT * FROM keys WHERE name = ?";
-        String sqlNode = "SELECT port FROM node_ports WHERE key_name = ? AND node_id = ?";
+        String sqlNode = "SELECT port FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
         Map<String, Object> result = new HashMap<>();
 
         try (Connection conn = getConnection()) {
             int maxConns = 1;
-
             try (PreparedStatement stmt = conn.prepareStatement(sqlKey)) {
                 stmt.setString(1, name);
                 ResultSet rs = stmt.executeQuery();
@@ -330,16 +371,22 @@ public class Database {
 
                 boolean isEnable = rs.getBoolean("is_enable");
                 String expireTime = rs.getString("expire_time");
+                double balance = rs.getDouble("balance");
 
-                if (isEnable && expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
-                    try {
-                        LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
-                        if (LocalDateTime.now().isAfter(expDate)) {
-                            isEnable = false;
-                            Main.myConsole.log("Database", "Key " + name + " expired dynamically (" + expireTime + ")");
+                if (isEnable) {
+                    if (balance <= 0) {
+                        isEnable = false;
+                        ServerLogger.infoWithSource("Database", "nkm.db.keyRejected", name);
+                    } else if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
+                        try {
+                            LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
+                            if (LocalDateTime.now().isAfter(expDate)) {
+                                isEnable = false;
+                                ServerLogger.infoWithSource("Database", "nkm.db.keyExpired", name, expireTime);
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Time parse error: " + e.getMessage());
                         }
-                    } catch (Exception e) {
-                        Main.myConsole.warn("Database", "Parse time error for " + name + ": " + e.getMessage());
                     }
                 }
 
@@ -351,7 +398,7 @@ public class Database {
                 }
 
                 result.put("name", rs.getString("name"));
-                result.put("balance", rs.getDouble("balance"));
+                result.put("balance", balance);
                 result.put("rate", rs.getDouble("rate"));
                 result.put("expireTime", expireTime);
                 result.put("isEnable", true);
@@ -381,7 +428,7 @@ public class Database {
             }
             return result;
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Error getting key info", e);
+            ServerLogger.error("Database", "nkm.db.getInfoFail", e);
             return null;
         }
     }
@@ -390,52 +437,59 @@ public class Database {
         List<String> invalidKeys = new ArrayList<>();
         if (keysToCheck == null || keysToCheck.isEmpty()) return invalidKeys;
 
-        String selectSql = "SELECT name, balance, expire_time FROM keys WHERE name = ?";
-        String disableSql = "UPDATE keys SET is_enable = FALSE WHERE name = ?";
-
         try (Connection conn = getConnection()) {
-            for (String key : keysToCheck) {
-                boolean shouldDisable = false;
+            StringBuilder inClause = new StringBuilder();
+            for (int i = 0; i < keysToCheck.size(); i++) {
+                inClause.append("?");
+                if (i < keysToCheck.size() - 1) inClause.append(",");
+            }
 
-                try (PreparedStatement stmt = conn.prepareStatement(selectSql)) {
-                    stmt.setString(1, key);
-                    ResultSet rs = stmt.executeQuery();
-                    if (rs.next()) {
-                        double balance = rs.getDouble("balance");
-                        String expireTimeStr = rs.getString("expire_time");
+            conn.setAutoCommit(false);
+            String checkSql = "SELECT name, balance, expire_time FROM keys WHERE name IN (" + inClause + ") AND is_enable = TRUE FOR UPDATE";
+            String disableSql = "UPDATE keys SET is_enable = FALSE WHERE name = ?";
 
-                        if (balance <= 0) {
-                            shouldDisable = true;
-                            Main.myConsole.log("Database", "Key " + key + " disabled (Balance depleted)");
+            try (PreparedStatement selStmt = conn.prepareStatement(checkSql);
+                 PreparedStatement upStmt = conn.prepareStatement(disableSql)) {
+                for (int i = 0; i < keysToCheck.size(); i++) selStmt.setString(i + 1, keysToCheck.get(i));
+                ResultSet rs = selStmt.executeQuery();
+                while (rs.next()) {
+                    String name = rs.getString("name");
+                    double balance = rs.getDouble("balance");
+                    String expireTime = rs.getString("expire_time");
+                    boolean kill = false;
+                    String reason = "";
+
+                    if (balance <= 0) {
+                        kill = true;
+                        reason = "Balance depleted";
+                    } else if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
+                        try {
+                            LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
+                            if (LocalDateTime.now().isAfter(expDate)) {
+                                kill = true;
+                                reason = "Expired";
+                            }
+                        } catch (Exception ignored) {
                         }
+                    }
 
-                        if (!shouldDisable && expireTimeStr != null && !expireTimeStr.isBlank() && !expireTimeStr.equalsIgnoreCase("PERMANENT")) {
-                            try {
-                                LocalDateTime expDate = LocalDateTime.parse(expireTimeStr, TIME_FORMATTER);
-                                if (LocalDateTime.now().isAfter(expDate)) {
-                                    shouldDisable = true;
-                                    Main.myConsole.log("Database", "Key " + key + " disabled (Expired: " + expireTimeStr + ")");
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                    } else {
-                        invalidKeys.add(key);
-                        continue;
+                    if (kill) {
+                        upStmt.setString(1, name);
+                        upStmt.executeUpdate();
+                        invalidKeys.add(name);
+                        ServerLogger.infoWithSource("Database", "nkm.db.keyDisabledAuto", name, reason);
                     }
                 }
-
-                if (shouldDisable) {
-                    try (PreparedStatement updateStmt = conn.prepareStatement(disableSql)) {
-                        updateStmt.setString(1, key);
-                        updateStmt.executeUpdate();
-                    }
-                    invalidKeys.add(key);
-                }
+                conn.commit();
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
             }
         } catch (SQLException e) {
-            Main.myConsole.error("Database", "Error checking invalid keys", e);
+            ServerLogger.error("Database", "nkm.db.checkFail", e);
         }
-
         return invalidKeys;
     }
 }
