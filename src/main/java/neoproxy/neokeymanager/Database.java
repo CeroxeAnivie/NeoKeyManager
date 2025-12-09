@@ -14,11 +14,14 @@ public class Database {
     private static final String DB_PASSWORD = "";
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy/M/d-HH:mm");
+
+    // ANSI 颜色代码，用于 UI 显示状态
     private static final String ANSI_RESET = "\u001B[0m";
     private static final String ANSI_GREEN = "\u001B[32m";
     private static final String ANSI_RED = "\u001B[31m";
 
     private static String getDbUrl() {
+        // 保持连接活跃，防止频繁连接断开，设置锁超时
         return "jdbc:h2:" + Config.DB_PATH + ";DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000;DEFAULT_LOCK_TIMEOUT=10000";
     }
 
@@ -29,6 +32,8 @@ public class Database {
 
             try (Connection conn = getConnection()) {
                 Statement stmt = conn.createStatement();
+
+                // 1. 创建 keys 表
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS keys (
                                 name VARCHAR(50) PRIMARY KEY,
@@ -42,6 +47,7 @@ public class Database {
                             )
                         """);
 
+                // 2. 兼容性迁移：检查并添加可能缺失的列（针对旧版DB升级）
                 try {
                     stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS max_conns INT DEFAULT 1");
                 } catch (SQLException ignored) {
@@ -55,6 +61,7 @@ public class Database {
                 } catch (SQLException ignored) {
                 }
 
+                // 3. 创建映射表
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS node_ports (
                                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -80,7 +87,7 @@ public class Database {
         return DriverManager.getConnection(getDbUrl(), DB_USER, DB_PASSWORD);
     }
 
-    // ---------------- Status Control ----------------
+    // ==================== Status Control ====================
 
     public static boolean setKeyStatus(String name, boolean enable) {
         String sql = "UPDATE keys SET is_enable = ? WHERE name = ?";
@@ -108,7 +115,7 @@ public class Database {
         }
     }
 
-    // ---------------- CRUD ----------------
+    // ==================== CRUD Operations ====================
 
     public static boolean keyExists(String name) {
         String sql = "SELECT 1 FROM keys WHERE name = ?";
@@ -175,6 +182,7 @@ public class Database {
             if (!first) sql.append(", ");
             sql.append("default_port = ?, max_conns = ?");
             params.add(port);
+            // 这里调用 PortUtils 重新计算连接数，确保数据一致性
             params.add(PortUtils.calculateSize(port));
             first = false;
         }
@@ -182,7 +190,7 @@ public class Database {
         sql.append(" WHERE name = ?");
         params.add(name);
 
-        if (first) return;
+        if (first) return; // 没有参数需要更新
 
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
@@ -196,6 +204,7 @@ public class Database {
     }
 
     public static void addNodePort(String name, String nodeId, String port) {
+        // 使用事务确保先删后增的原子性
         String delSql = "DELETE FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
         String insertSql = "INSERT INTO node_ports (key_name, node_id, port) VALUES (?, ?, ?)";
 
@@ -203,6 +212,7 @@ public class Database {
             conn.setAutoCommit(false);
             try (PreparedStatement delStmt = conn.prepareStatement(delSql);
                  PreparedStatement insStmt = conn.prepareStatement(insertSql)) {
+
                 delStmt.setString(1, name);
                 delStmt.setString(2, nodeId);
                 delStmt.executeUpdate();
@@ -211,6 +221,7 @@ public class Database {
                 insStmt.setString(2, nodeId);
                 insStmt.setString(3, port);
                 insStmt.executeUpdate();
+
                 conn.commit();
             } catch (SQLException e) {
                 conn.rollback();
@@ -273,8 +284,12 @@ public class Database {
         }
     }
 
-    // ---------------- Query ----------------
+    // ==================== Query Operations ====================
 
+    /**
+     * 获取Key的基本端口配置信息
+     * 用于 Key Map 指令中的兼容性检查 (Requirement 1 & 2)
+     */
     public static Map<String, Object> getKeyPortInfo(String name) {
         String sql = "SELECT default_port, max_conns FROM keys WHERE name = ?";
         Map<String, Object> info = new HashMap<>();
@@ -294,11 +309,16 @@ public class Database {
         return null;
     }
 
-    public static List<String> getAllKeysFormatted() {
-        List<String> list = new ArrayList<>();
+    /**
+     * 获取原始数据供 Main.handleListKeys 进行动态格式化 (Requirement 5)
+     * 解决长序列号导致的表格错位问题
+     */
+    public static List<Map<String, String>> getAllKeysRaw() {
+        List<Map<String, String>> result = new ArrayList<>();
         Map<String, List<String>> mapInfo = new HashMap<>();
 
         try (Connection conn = getConnection()) {
+            // 1. 获取所有 Map 信息
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery("SELECT key_name, node_id, port FROM node_ports")) {
                 while (rs.next()) {
@@ -310,43 +330,56 @@ public class Database {
                 }
             }
 
+            // 2. 获取 Key 信息
             String sql = "SELECT * FROM keys ORDER BY name ASC";
             try (Statement stmt = conn.createStatement();
                  ResultSet rs = stmt.executeQuery(sql)) {
-                String mapIndent = " ".repeat(46);
+
                 while (rs.next()) {
                     String name = rs.getString("name");
                     boolean dbEnable = rs.getBoolean("is_enable");
                     boolean webEnable = rs.getBoolean("enable_web");
                     String expireTime = rs.getString("expire_time");
                     double balance = rs.getDouble("balance");
+                    String port = rs.getString("default_port");
+                    int conns = rs.getInt("max_conns");
 
+                    // 逻辑判断是否真正启用
                     boolean isReallyEnabled = dbEnable;
                     if (isReallyEnabled) {
                         if (balance <= 0) {
                             isReallyEnabled = false;
                         } else if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
                             try {
-                                LocalDateTime expDate = LocalDateTime.parse(expireTime, TIME_FORMATTER);
-                                if (LocalDateTime.now().isAfter(expDate)) isReallyEnabled = false;
+                                if (LocalDateTime.now().isAfter(LocalDateTime.parse(expireTime, TIME_FORMATTER)))
+                                    isReallyEnabled = false;
                             } catch (Exception ignored) {
                             }
                         }
                     }
 
-                    String statusIcon = isReallyEnabled ? (ANSI_GREEN + "✔" + ANSI_RESET) : (ANSI_RED + "✘" + ANSI_RESET);
-                    String webIcon = webEnable ? "Yes" : "No";
+                    Map<String, String> row = new HashMap<>();
+                    row.put("type", "KEY");
+                    row.put("name", name);
+                    row.put("status_icon", isReallyEnabled ? (ANSI_GREEN + "✔" + ANSI_RESET) : (ANSI_RED + "✘" + ANSI_RESET));
+                    row.put("balance", String.format("%.2f", balance));
+                    row.put("rate", String.format("%.2f", rs.getDouble("rate")));
+                    row.put("port", port);
+                    row.put("conns", String.valueOf(conns));
+                    row.put("expire", expireTime == null ? "PERMANENT" : expireTime);
+                    row.put("web", webEnable ? "Yes" : "No");
+                    result.add(row);
 
-                    list.add(String.format("   %-16s %-12s %-12.2f %-8.2f %-16s %-6d %-18s %-4s",
-                            statusIcon, name, balance, rs.getDouble("rate"), rs.getString("default_port"),
-                            rs.getInt("max_conns"), expireTime, webIcon));
-
+                    // 添加 Map 行
                     List<String> maps = mapInfo.get(name);
                     if (maps != null) {
                         for (int i = 0; i < maps.size(); i++) {
                             String m = maps.get(i);
                             String prefix = (i == maps.size() - 1) ? "└─" : "├─";
-                            list.add(mapIndent + String.format("%s [MAP] %s", prefix, m));
+                            Map<String, String> mapRow = new HashMap<>();
+                            mapRow.put("type", "MAP");
+                            mapRow.put("map_str", String.format("%s [MAP] %s", prefix, m));
+                            result.add(mapRow);
                         }
                     }
                 }
@@ -354,9 +387,63 @@ public class Database {
         } catch (SQLException e) {
             ServerLogger.error("Database", "nkm.db.listFail", e);
         }
-        return list;
+        return result;
     }
 
+    /**
+     * 核心心跳检查轻量级方法 (Requirement 3)
+     * 只做基本有效性验证，不进行复杂的 Session 逻辑
+     */
+    public static Map<String, Object> getKeyInfoSimple(String name) {
+        String sql = "SELECT name, max_conns, is_enable, expire_time, balance FROM keys WHERE name = ?";
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, name);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                boolean isEnable = rs.getBoolean("is_enable");
+                double balance = rs.getDouble("balance");
+                String expireTime = rs.getString("expire_time");
+                int maxConns = rs.getInt("max_conns");
+
+                String msg = "OK";
+                if (!isEnable) msg = "Disabled by admin";
+                else if (balance <= 0) {
+                    isEnable = false;
+                    msg = "Balance depleted";
+                } else if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
+                    try {
+                        if (LocalDateTime.now().isAfter(LocalDateTime.parse(expireTime, TIME_FORMATTER))) {
+                            isEnable = false;
+                            msg = "Expired";
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                if (!isEnable) {
+                    Map<String, Object> err = new HashMap<>();
+                    err.put("ERROR_CODE", 403);
+                    err.put("MSG", msg);
+                    return err;
+                }
+
+                Map<String, Object> res = new HashMap<>();
+                res.put("name", rs.getString("name"));
+                res.put("max_conns", maxConns);
+                res.put("is_enable", true);
+                return res;
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    /**
+     * 完整信息获取 (用于初始连接 /api/key)
+     * 包含 Session 注册逻辑
+     */
     public static Map<String, Object> getKeyInfo(String name, String nodeId) {
         String sqlKey = "SELECT * FROM keys WHERE name = ?";
         String sqlNode = "SELECT port FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
@@ -407,6 +494,9 @@ public class Database {
                 maxConns = rs.getInt("max_conns");
             }
 
+            // 调用 SessionManager 尝试注册 (注意：Traffic/Heartbeat 不会调用此方法，避免冲突)
+            // 这里传入 maxConns 用于首次连接检查
+            // 如果是心跳包，逻辑走 handleHeartbeat
             if (!SessionManager.getInstance().tryAcquireOrRefresh(name, nodeId, maxConns)) {
                 Map<String, Object> error = new HashMap<>();
                 error.put("ERROR_CODE", 409);
@@ -414,6 +504,7 @@ public class Database {
                 return error;
             }
 
+            // 处理端口映射覆盖
             if (nodeId != null && !nodeId.isBlank()) {
                 try (PreparedStatement stmt = conn.prepareStatement(sqlNode)) {
                     stmt.setString(1, name);
@@ -421,6 +512,7 @@ public class Database {
                     ResultSet rs = stmt.executeQuery();
                     if (rs.next()) {
                         String mappedPort = rs.getString("port");
+                        // 确保映射端口也不超过最大连接数限制
                         String finalPort = PortUtils.truncateRange(mappedPort, maxConns);
                         result.put("port", finalPort);
                     }
@@ -433,6 +525,9 @@ public class Database {
         }
     }
 
+    /**
+     * 批量检查无效 Key (用于 Traffic Sync)
+     */
     public static List<String> checkInvalidKeys(List<String> keysToCheck) {
         List<String> invalidKeys = new ArrayList<>();
         if (keysToCheck == null || keysToCheck.isEmpty()) return invalidKeys;
@@ -445,12 +540,15 @@ public class Database {
             }
 
             conn.setAutoCommit(false);
+            // 使用 FOR UPDATE 锁行，防止并发修改
             String checkSql = "SELECT name, balance, expire_time FROM keys WHERE name IN (" + inClause + ") AND is_enable = TRUE FOR UPDATE";
             String disableSql = "UPDATE keys SET is_enable = FALSE WHERE name = ?";
 
             try (PreparedStatement selStmt = conn.prepareStatement(checkSql);
                  PreparedStatement upStmt = conn.prepareStatement(disableSql)) {
+
                 for (int i = 0; i < keysToCheck.size(); i++) selStmt.setString(i + 1, keysToCheck.get(i));
+
                 ResultSet rs = selStmt.executeQuery();
                 while (rs.next()) {
                     String name = rs.getString("name");
@@ -491,5 +589,84 @@ public class Database {
             ServerLogger.error("Database", "nkm.db.checkFail", e);
         }
         return invalidKeys;
+    }
+    // ... 把这个方法加入到 Database.java 中 ...
+
+    /**
+     * 批量查询序列号状态 (新增，用于 NPS 1分钟定时的状态同步)
+     */
+    public static Map<String, Protocol.KeyStatusDetail> getBatchKeyStatus(List<String> keys) {
+        Map<String, Protocol.KeyStatusDetail> result = new HashMap<>();
+        if (keys == null || keys.isEmpty()) return result;
+
+        // 初始化所有请求的 Key 为 "NotFound" (防止数据库查不到时没返回)
+        for (String k : keys) {
+            Protocol.KeyStatusDetail detail = new Protocol.KeyStatusDetail();
+            detail.isValid = false;
+            detail.reason = "NotFound";
+            result.put(k, detail);
+        }
+
+        try (Connection conn = getConnection()) {
+            StringBuilder inClause = new StringBuilder();
+            for (int i = 0; i < keys.size(); i++) {
+                inClause.append("?");
+                if (i < keys.size() - 1) inClause.append(",");
+            }
+
+            String sql = "SELECT name, balance, expire_time, is_enable FROM keys WHERE name IN (" + inClause + ")";
+
+            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                for (int i = 0; i < keys.size(); i++) {
+                    stmt.setString(i + 1, keys.get(i));
+                }
+
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        String name = rs.getString("name");
+                        double balance = rs.getDouble("balance");
+                        String expireTime = rs.getString("expire_time");
+                        boolean isEnable = rs.getBoolean("is_enable");
+
+                        Protocol.KeyStatusDetail detail = new Protocol.KeyStatusDetail();
+                        detail.balance = balance;
+                        detail.expireTime = expireTime;
+
+                        // 统一校验逻辑
+                        if (!isEnable) {
+                            detail.isValid = false;
+                            detail.reason = "Disabled";
+                        } else if (balance <= 0) {
+                            detail.isValid = false;
+                            detail.reason = "NoBalance";
+                        } else {
+                            // 检查时间
+                            boolean expired = false;
+                            if (expireTime != null && !expireTime.isBlank() && !expireTime.equalsIgnoreCase("PERMANENT")) {
+                                try {
+                                    if (LocalDateTime.now().isAfter(LocalDateTime.parse(expireTime, TIME_FORMATTER))) {
+                                        expired = true;
+                                    }
+                                } catch (Exception ignored) {
+                                }
+                            }
+
+                            if (expired) {
+                                detail.isValid = false;
+                                detail.reason = "Expired";
+                            } else {
+                                detail.isValid = true;
+                                detail.reason = "OK";
+                            }
+                        }
+
+                        result.put(name, detail);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            ServerLogger.error("Database", "nkm.db.batchCheckFail", e);
+        }
+        return result;
     }
 }
