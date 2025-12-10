@@ -1,5 +1,6 @@
 package neoproxy.neokeymanager;
 
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -159,6 +160,31 @@ public class SessionManager {
                 it.remove();
             }
         }
+    }
+// 请添加到 SessionManager.java 类中
+    /**
+     * 获取当前活跃会话的快照 (线程安全)
+     * 返回结构: KeyName -> { NodeId -> Port }
+     */
+    public Map<String, Map<String, String>> getActiveSessionsSnapshot() {
+        Map<String, Map<String, String>> snapshot = new HashMap<>();
+
+        // 遍历 ConcurrentHashMap
+        sessions.forEach((keyName, nodeMap) -> {
+            Map<String, String> nodeDetails = new HashMap<>();
+            nodeMap.forEach((nodeId, session) -> {
+                // 如果端口是 INIT，显示为 Negotiating
+                String port = (session.assignedPort == null || session.assignedPort.equals("INIT"))
+                        ? "Negotiating..."
+                        : session.assignedPort;
+                nodeDetails.put(nodeId, port);
+            });
+            if (!nodeDetails.isEmpty()) {
+                snapshot.put(keyName, nodeDetails);
+            }
+        });
+
+        return snapshot;
     }
 
     private static class NodeSession {

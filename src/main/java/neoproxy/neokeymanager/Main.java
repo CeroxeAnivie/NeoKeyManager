@@ -8,10 +8,7 @@ import plethora.utils.MyConsole;
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -488,9 +485,99 @@ public class Main {
             Database.setWebStatus(keyName, enable);
             ServerLogger.infoWithSource("WebManager", "nkm.info.webStatus", keyName, enable);
         });
+        // 【新增】顶级 list 指令 (直接显示占用详情)
+        myConsole.registerCommand("list", "Show active key sessions", args -> handleTopLevelList());
 
         myConsole.registerCommand("reload", "Reload", args -> handleReload());
         myConsole.registerCommand("stop", "Stop", args -> System.exit(0));
+    }
+    // 2. 新增 handleTopLevelList 方法 (实现高颜值表格)
+    private static void handleTopLevelList() {
+        // 获取数据快照
+        Map<String, Map<String, String>> activeSessions = SessionManager.getInstance().getActiveSessionsSnapshot();
+
+        if (activeSessions.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
+            return;
+        }
+
+        // 预计算列宽 (动态适配)
+        int maxKeyLen = 8;    // "SERIAL"
+        int maxNodeLen = 8;   // "NODE ID"
+        int maxPortLen = 6;   // "PORT"
+
+        // 准备数据：Key -> UsageString (例如 "2 / 5")
+        Map<String, String> usageMap = new HashMap<>();
+
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            String keyName = entry.getKey();
+            Map<String, String> nodes = entry.getValue();
+
+            maxKeyLen = Math.max(maxKeyLen, keyName.length());
+
+            // 查询 DB 获取最大连接数
+            Map<String, Object> dbInfo = Database.getKeyPortInfo(keyName);
+            int maxConns = (dbInfo != null) ? (int) dbInfo.get("max_conns") : 0;
+            int currentConns = nodes.size();
+
+            usageMap.put(keyName, currentConns + " / " + maxConns);
+
+            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+                maxNodeLen = Math.max(maxNodeLen, nodeEntry.getKey().length());
+                maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
+            }
+        }
+
+        // 增加一点 Padding 让表格不拥挤
+        maxKeyLen += 2;
+        maxNodeLen += 2;
+        maxPortLen += 2;
+
+        // 构建表格
+        // 格式: Key (Usage) | Node | Port
+        // 占用列固定宽度 12 即可 (够显示 "999 / 999")
+        String headerFmt = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
+        String rowFmtKey = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
+        String rowFmtSub = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n");
+
+        // 分割线长度
+        int totalWidth = 3 + maxKeyLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
+        String separator = "-".repeat(totalWidth);
+
+        // 表头
+        sb.append(separator).append("\n");
+        sb.append(String.format(headerFmt, "SERIAL", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
+        sb.append(separator).append("\n");
+
+        // 数据行
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            String keyName = entry.getKey();
+            Map<String, String> nodes = entry.getValue();
+            String usage = usageMap.get(keyName);
+
+            boolean isFirstRow = true;
+            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+                String nodeId = nodeEntry.getKey();
+                String port = nodeEntry.getValue();
+
+                if (isFirstRow) {
+                    // 第一行：显示 Key 和 占用比
+                    sb.append(String.format(rowFmtKey, keyName, usage, nodeId, port)).append("\n");
+                    isFirstRow = false;
+                } else {
+                    // 后续行：左侧留白，视觉上合并单元格
+                    sb.append(String.format(rowFmtSub, "", "", nodeId, port)).append("\n");
+                }
+            }
+            // 每个 Key 组之间加分割线
+            sb.append(separator).append("\n");
+        }
+
+        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
+        else System.out.println(sb.toString());
     }
 
     private static void printKeyUsage() {
