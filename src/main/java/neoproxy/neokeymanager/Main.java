@@ -124,8 +124,9 @@ public class Main {
         }
 
         String defaultPort = (String) keyInfo.get("default_port");
-        boolean defaultIsDynamic = PortUtils.isDynamic(defaultPort);
-        boolean mapIsDynamic = PortUtils.isDynamic(validMapPort);
+        // [修复] PortUtils -> Utils.isDynamicPort
+        boolean defaultIsDynamic = Utils.isDynamicPort(defaultPort);
+        boolean mapIsDynamic = Utils.isDynamicPort(validMapPort);
 
         if (!defaultIsDynamic && mapIsDynamic) {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.mapStaticToDynamic", name, defaultPort, validMapPort);
@@ -184,7 +185,8 @@ public class Main {
 
         Map<String, Object> oldInfo = Database.getKeyPortInfo(name);
         String oldPort = (String) oldInfo.get("default_port");
-        boolean oldIsDynamic = PortUtils.isDynamic(oldPort);
+        // [修复] PortUtils -> Utils.isDynamicPort
+        boolean oldIsDynamic = Utils.isDynamicPort(oldPort);
 
         Double newBalance = null;
         Double newRate = null;
@@ -209,7 +211,8 @@ public class Main {
 
         boolean needCleanMap = false;
         if (newPort != null) {
-            boolean newIsDynamic = PortUtils.isDynamic(newPort);
+            // [修复] PortUtils -> Utils.isDynamicPort
+            boolean newIsDynamic = Utils.isDynamicPort(newPort);
             if (oldIsDynamic && !newIsDynamic) {
                 needCleanMap = true;
                 ServerLogger.warnWithSource("KeyManager", "nkm.warn.typeChangeClean", name);
@@ -443,7 +446,8 @@ public class Main {
             enableWebHTML = webStr.equals("true") || webStr.equals("1") || webStr.equals("on");
         }
 
-        int maxConns = PortUtils.calculateSize(validatedPortStr);
+        // [修复] PortUtils -> Utils.calculatePortSize
+        int maxConns = Utils.calculatePortSize(validatedPortStr);
         if (Database.addKey(name, balance, rate, expireTime, validatedPortStr, maxConns)) {
             if (enableWebHTML) {
                 Database.setWebStatus(name, true);

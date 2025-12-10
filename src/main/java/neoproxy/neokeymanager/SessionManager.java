@@ -3,7 +3,6 @@ package neoproxy.neokeymanager;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -11,8 +10,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
- * 工业级 Session 管理器 (Multi-Port Support)
- * 支持单节点多端口并发占用
+ * 工业级 Session 管理器 (Final Gold Version)
+ * <p>
+ * 逻辑闭环验证：
+ * 1. 幽灵占位修复：INIT 与真实端口互斥，自动移除。
+ * 2. 日志降噪：隐藏 INIT 过程日志。
+ * 3. 严格扩容限制：无论通过 Register 还是 Heartbeat 扩容，均需检查 max_conns。
+ * 4. 性能优化：仅在新端口接入时触锁检查，常规心跳无性能损耗。
  */
 public class SessionManager {
     private static final SessionManager INSTANCE = new SessionManager();
@@ -34,64 +38,116 @@ public class SessionManager {
         return INSTANCE;
     }
 
-    public boolean tryAcquireOrRefresh(String keyName, String nodeId, int maxConnections) {
-        return handleHeartbeat(keyName, nodeId, "INIT", maxConnections);
-    }
-
     /**
-     * 处理心跳 (核心逻辑修改：支持多端口)
+     * [核心] 尝试注册 Session
+     * 场景：新连接接入 / 掉线重连
      */
-    public boolean handleHeartbeat(String keyName, String nodeId, String portReported, int maxConnections) {
+    public boolean tryRegisterSession(String keyName, String nodeId, String port, int maxConnections) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.computeIfAbsent(keyName, k -> new ConcurrentHashMap<>());
 
         synchronized (nodeMap) {
-            NodeSession session = nodeMap.computeIfAbsent(nodeId, k -> new NodeSession());
+            NodeSession session = nodeMap.get(nodeId);
 
-            // 1. 如果是新端口（该节点尚未记录此端口），检查总连接数限制
-            if (!session.hasPort(portReported)) {
-                // 计算当前该 Key 下所有节点的端口总和
-                int currentTotalPorts = countTotalPorts(nodeMap);
-
-                // 如果已满，且不是刷新已有端口，则拒绝
-                if (currentTotalPorts >= maxConnections) {
-                    // 尝试清理僵尸释放空间
-                    checkZombiesForKey(keyName, nodeMap);
-                    if (countTotalPorts(nodeMap) >= maxConnections) {
-                        ServerLogger.warnWithSource("Session", "nkm.session.rejected", keyName, nodeId, maxConnections);
-                        return false;
-                    }
+            // 如果 Session 已存在，检查是否允许该端口接入
+            if (session != null) {
+                if (!canAcceptPort(keyName, nodeMap, session, port, maxConnections)) {
+                    return false; // 拒绝扩容
                 }
+                session.refreshPort(port);
+                return true;
             }
 
-            // 2. 注册/刷新端口
-            session.refreshPort(portReported);
-
-            // 3. [优化] 如果上报的是真实端口，移除该节点的 INIT 占位符
-            if (!"INIT".equals(portReported)) {
-                session.removePort("INIT");
+            // 如果是新节点
+            checkZombiesForKey(keyName, nodeMap);
+            int currentTotal = countTotalPorts(nodeMap);
+            if (currentTotal >= maxConnections) {
+                return false; // 总数已满
             }
 
-            // 仅在非 INIT 且是新端口时打印日志
-            if (!"INIT".equals(portReported) && !session.loggedPorts.contains(portReported)) {
-                int total = countTotalPorts(nodeMap);
-                ServerLogger.infoWithSource("Session", "nkm.session.connected", keyName, nodeId, portReported, total + "/" + maxConnections);
-                session.loggedPorts.add(portReported);
-            }
+            // 创建新 Session
+            session = new NodeSession();
+            session.refreshPort(port);
+            nodeMap.put(nodeId, session);
 
+            logConnection(keyName, nodeId, port, session);
             return true;
         }
     }
 
-    // 仅用于 Traffic Sync
-    public void refreshOnTraffic(String keyName, String nodeId) {
-        ConcurrentHashMap<String, NodeSession> map = sessions.get(keyName);
-        if (map != null && nodeId != null) {
-            NodeSession session = map.get(nodeId);
-            if (session != null) session.refreshAll();
+    /**
+     * [核心] 心跳保活
+     * 场景：常规保活 / 恶意客户端强行扩容
+     */
+    public boolean keepAlive(String keyName, String nodeId, String port, int maxConnections) {
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(keyName);
+        if (nodeMap == null) {
+            return tryRegisterSession(keyName, nodeId, port, maxConnections);
+        }
+
+        NodeSession session = nodeMap.get(nodeId);
+        if (session != null) {
+            // [性能优化] 99.9% 的情况是旧端口保活，直接通过，无需加锁检查
+            if (session.containsPort(port)) {
+                session.refreshPort(port);
+                return true;
+            }
+
+            // [逻辑闭环] 这是一个现有 Session 发来的“新端口”，必须检查容量！防止 Heartbeat 绕过限制
+            synchronized (nodeMap) {
+                // 双重检查：防止在等待锁的过程中端口已经被加上了
+                if (session.containsPort(port)) {
+                    session.refreshPort(port);
+                    return true;
+                }
+
+                // 严格检查扩容权限
+                if (!canAcceptPort(keyName, nodeMap, session, port, maxConnections)) {
+                    // ServerLogger.warnWithSource("Session", "nkm.session.rejectedHeartbeatExpansion", keyName, nodeId, port);
+                    return false; // 拒绝该端口的心跳，通知客户端断开
+                }
+
+                session.refreshPort(port);
+                logConnection(keyName, nodeId, port, session);
+                return true;
+            }
+        } else {
+            return tryRegisterSession(keyName, nodeId, port, maxConnections);
         }
     }
 
-    public void release(String keyName, String nodeId) {
+    // ==================== 逻辑复用 ====================
+
+    /**
+     * 统一判断逻辑：当前 Session 是否可以接纳这个端口？
+     * 包含了：INIT转正检查、僵尸清理、最大连接数检查
+     */
+    private boolean canAcceptPort(String keyName, Map<String, NodeSession> nodeMap, NodeSession session, String port, int maxConnections) {
+        // 1. 如果端口已存在，直接允许
+        if (session.containsPort(port)) return true;
+
+        // 2. 如果是 INIT 转正 (INIT -> 真实端口)，视为状态切换，允许
+        boolean isInitTransition = !"INIT".equals(port) && session.containsPort("INIT");
+        if (isInitTransition) return true;
+
+        // 3. 此时确认为“纯新增端口”，必须检查系统容量
+        checkZombiesForKey(keyName, nodeMap); // 临死前再抢救一下位置
+        int currentTotal = countTotalPorts(nodeMap);
+
+        // 如果满了，拒绝
+        return currentTotal < maxConnections;
+    }
+
+    private void logConnection(String keyName, String nodeId, String port, NodeSession session) {
+        if (!"INIT".equals(port) && !session.hasLogged(port)) {
+            ServerLogger.infoWithSource("Session", "nkm.session.connected", keyName, nodeId, port);
+            session.markLogged(port);
+        }
+    }
+
+    // ==================== 辅助方法 ====================
+
+    public void releaseSession(String keyName, String nodeId) {
+        if (keyName == null || nodeId == null) return;
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(keyName);
         if (nodeMap != null) {
             synchronized (nodeMap) {
@@ -104,14 +160,9 @@ public class SessionManager {
     }
 
     public void forceReleaseKey(String keyName) {
-        if (sessions.remove(keyName) != null) {
-            ServerLogger.infoWithSource("Session", "nkm.session.forceClear", keyName);
-        }
+        sessions.remove(keyName);
     }
 
-    /**
-     * 获取当前真实的占用数 (端口总数)
-     */
     public int getActiveCount(String keyName) {
         Map<String, NodeSession> nodeMap = sessions.get(keyName);
         if (nodeMap == null) return 0;
@@ -120,18 +171,6 @@ public class SessionManager {
         }
     }
 
-    private int countTotalPorts(Map<String, NodeSession> nodeMap) {
-        int sum = 0;
-        for (NodeSession s : nodeMap.values()) {
-            sum += s.getPortCount();
-        }
-        return sum;
-    }
-
-    /**
-     * 获取快照供 list 指令使用
-     * Value 格式: "10086 10087"
-     */
     public Map<String, Map<String, String>> getActiveSessionsSnapshot() {
         Map<String, Map<String, String>> snapshot = new HashMap<>();
         sessions.forEach((keyName, nodeMap) -> {
@@ -149,32 +188,31 @@ public class SessionManager {
         return snapshot;
     }
 
-    private void checkZombies() {
-        for (String key : sessions.keySet()) {
-            ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(key);
-            if (nodeMap != null) {
-                synchronized (nodeMap) {
-                    checkZombiesForKey(key, nodeMap);
-                    if (nodeMap.isEmpty()) sessions.remove(key);
-                }
-            }
+    private int countTotalPorts(Map<String, NodeSession> nodeMap) {
+        int sum = 0;
+        for (NodeSession s : nodeMap.values()) {
+            sum += s.getPortCount();
         }
+        return sum;
+    }
+
+    private void checkZombies() {
+        sessions.forEach((k, v) -> {
+            synchronized (v) {
+                checkZombiesForKey(k, v);
+                if (v.isEmpty()) sessions.remove(k);
+            }
+        });
     }
 
     private void checkZombiesForKey(String keyName, Map<String, NodeSession> nodeMap) {
         long now = System.currentTimeMillis();
         Iterator<Map.Entry<String, NodeSession>> it = nodeMap.entrySet().iterator();
-
         while (it.hasNext()) {
             Map.Entry<String, NodeSession> entry = it.next();
-            NodeSession session = entry.getValue();
-
-            // 移除超时的端口
-            session.activePorts.entrySet().removeIf(e -> (now - e.getValue()) > Protocol.ZOMBIE_TIMEOUT_MS);
-
-            // 如果节点没有任何端口了，移除节点
-            if (session.activePorts.isEmpty()) {
-                ServerLogger.warnWithSource("Session", "nkm.session.timeout", keyName, entry.getKey(), "Timeout");
+            entry.getValue().activePorts.entrySet().removeIf(e -> (now - e.getValue()) > Protocol.ZOMBIE_TIMEOUT_MS);
+            if (entry.getValue().activePorts.isEmpty()) {
+                ServerLogger.infoWithSource("Session", "nkm.session.timeout", keyName, entry.getKey());
                 it.remove();
             }
         }
@@ -182,41 +220,39 @@ public class SessionManager {
 
     // ==================== Inner Class ====================
     private static class NodeSession {
-        // Port -> LastHeartbeatTime
         final ConcurrentHashMap<String, Long> activePorts = new ConcurrentHashMap<>();
-        // 仅用于去重日志
-        final Set<String> loggedPorts = ConcurrentHashMap.newKeySet();
+        final java.util.Set<String> loggedPorts = ConcurrentHashMap.newKeySet();
 
-        void refreshPort(String port) {
-            activePorts.put(port, System.currentTimeMillis());
+        boolean containsPort(String p) {
+            return activePorts.containsKey(p);
         }
 
-        void removePort(String port) {
-            activePorts.remove(port);
-        }
-
-        void refreshAll() {
+        synchronized void refreshPort(String p) {
             long now = System.currentTimeMillis();
-            for (String k : activePorts.keySet()) {
-                activePorts.put(k, now);
+            activePorts.put(p, now);
+            if (!"INIT".equals(p)) {
+                activePorts.remove("INIT");
             }
         }
 
-        boolean hasPort(String port) {
-            return activePorts.containsKey(port);
-        }
-
-        int getPortCount() {
+        synchronized int getPortCount() {
             return activePorts.size();
         }
 
-        String getFormattedPorts() {
+        boolean hasLogged(String p) {
+            return loggedPorts.contains(p);
+        }
+
+        void markLogged(String p) {
+            loggedPorts.add(p);
+        }
+
+        synchronized String getFormattedPorts() {
             if (activePorts.isEmpty()) return "";
-            // 排序并拼接
             return activePorts.keySet().stream()
                     .sorted()
                     .map(p -> p.equals("INIT") ? "Negotiating..." : p)
-                    .collect(Collectors.joining(" ")); // 使用空格分隔
+                    .collect(Collectors.joining(" "));
         }
     }
 }
