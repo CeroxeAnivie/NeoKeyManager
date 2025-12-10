@@ -8,7 +8,10 @@ import plethora.utils.MyConsole;
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -133,12 +136,9 @@ public class Main {
         ServerLogger.infoWithSource("KeyManager", "nkm.info.mappingUpdated", name, nodeId, validMapPort);
     }
 
-    /**
-     * [Task 1] 实现 key delmap <key> <node-id>
-     */
     private static void handleDelMapKey(List<String> args) {
         if (args.size() != 2) {
-            ServerLogger.warnWithSource("Usage", "Usage: key delmap <key> <node-id>");
+            ServerLogger.warnWithSource("Usage", "nkm.usage.delmap");
             return;
         }
         String name = args.get(0);
@@ -156,12 +156,9 @@ public class Main {
         }
     }
 
-    /**
-     * [Task 4] 实现 key lp <key>
-     */
     private static void handleLookupKey(List<String> args) {
         if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "Usage: key lp <key>");
+            ServerLogger.warnWithSource("Usage", "nkm.usage.lp");
             return;
         }
         String targetKey = args.get(0);
@@ -169,7 +166,7 @@ public class Main {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
             return;
         }
-        // 复用 list 逻辑，但进行过滤
+        // 复用 printKeyTable，传入过滤器
         printKeyTable(targetKey, false);
     }
 
@@ -231,20 +228,17 @@ public class Main {
         ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
     }
 
-    /**
-     * [Task 2] 修改 key list 逻辑，支持 nomap
-     */
     private static void handleListKeys(List<String> args) {
+        // 如果用户错误输入 key list active，兼容跳转
+        if (args.contains("active")) {
+            handleTopLevelList();
+            return;
+        }
         boolean noMap = args.contains("nomap");
         printKeyTable(null, noMap);
     }
 
-    /**
-     * 通用表格打印方法
-     *
-     * @param targetKeyFilter 如果不为null，只打印此Key及其Map
-     * @param noMap           如果为true，不打印MAP行，并在Key行显示Count
-     */
+    // 核心数据库表格打印逻辑
     private static void printKeyTable(String targetKeyFilter, boolean noMap) {
         List<Map<String, String>> rows = Database.getAllKeysRaw();
         if (rows.isEmpty()) {
@@ -252,22 +246,17 @@ public class Main {
             return;
         }
 
-        // 过滤数据 (lp <key> 逻辑)
         if (targetKeyFilter != null) {
             List<Map<String, String>> filtered = new ArrayList<>();
             for (Map<String, String> row : rows) {
-                // 如果是Key行且名字匹配
                 if ("KEY".equals(row.get("type")) && targetKeyFilter.equals(row.get("name"))) {
                     filtered.add(row);
-                }
-                // 如果是Map行且parent_key匹配
-                else if ("MAP".equals(row.get("type")) && targetKeyFilter.equals(row.get("parent_key"))) {
+                } else if ("MAP".equals(row.get("type")) && targetKeyFilter.equals(row.get("parent_key"))) {
                     filtered.add(row);
                 }
             }
             rows = filtered;
             if (rows.isEmpty()) {
-                // 理论上前面 keyExists 检查过了，但双重保险
                 ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
                 return;
             }
@@ -284,7 +273,6 @@ public class Main {
         String rowFmt;
 
         if (noMap) {
-            // [Task 2] nomap 格式: 添加 MAPS 列
             headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
             rowFmt = "   %-16s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
         } else {
@@ -294,7 +282,7 @@ public class Main {
 
         StringBuilder sb = new StringBuilder();
         sb.append("\n");
-        String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90)); // 略微加宽
+        String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90));
 
         sb.append(separator).append("\n");
         if (noMap) {
@@ -316,7 +304,7 @@ public class Main {
                             row.get("conns"),
                             row.get("expire"),
                             row.get("web"),
-                            row.get("map_count") // [Task 2] 显示 Map 数量
+                            row.get("map_count")
                     )).append("\n");
                 } else {
                     sb.append(String.format(rowFmt,
@@ -331,15 +319,86 @@ public class Main {
                     )).append("\n");
                 }
             } else if ("MAP".equals(row.get("type"))) {
-                // 如果是 nomap 模式，跳过 MAP 行
                 if (noMap) continue;
-
                 int indentSize = 11 + maxNameLen + 13 + 9;
                 String mapIndent = " ".repeat(indentSize);
                 sb.append(mapIndent).append(row.get("map_str")).append("\n");
             }
         }
         sb.append(separator);
+
+        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
+        else System.out.println(sb.toString());
+    }
+
+    // 活跃会话表格打印逻辑 (list 指令)
+    private static void handleTopLevelList() {
+        SessionManager sm = SessionManager.getInstance();
+        Map<String, Map<String, String>> activeSessions = sm.getActiveSessionsSnapshot();
+
+        if (activeSessions.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
+            return;
+        }
+
+        int maxKeyLen = 8;
+        int maxNodeLen = 8;
+        int maxPortLen = 6;
+        Map<String, String> usageMap = new java.util.HashMap<>();
+
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            String keyName = entry.getKey();
+            Map<String, String> nodes = entry.getValue();
+
+            maxKeyLen = Math.max(maxKeyLen, keyName.length());
+            Map<String, Object> dbInfo = Database.getKeyPortInfo(keyName);
+            int maxConns = (dbInfo != null) ? (int) dbInfo.get("max_conns") : 0;
+            int currentConns = sm.getActiveCount(keyName);
+            usageMap.put(keyName, currentConns + " / " + maxConns);
+
+            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+                maxNodeLen = Math.max(maxNodeLen, nodeEntry.getKey().length());
+                maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
+            }
+        }
+
+        maxKeyLen += 2;
+        maxNodeLen += 2;
+        maxPortLen += 2;
+
+        String headerFmt = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtKey = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtSub = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n");
+
+        int totalWidth = 3 + maxKeyLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
+        String separator = "-".repeat(totalWidth);
+
+        sb.append(separator).append("\n");
+        sb.append(String.format(headerFmt, "SERIAL", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
+        sb.append(separator).append("\n");
+
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            String keyName = entry.getKey();
+            Map<String, String> nodes = entry.getValue();
+            String usage = usageMap.get(keyName);
+
+            boolean isFirstNode = true;
+            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+                String nodeId = nodeEntry.getKey();
+                String portString = nodeEntry.getValue();
+
+                if (isFirstNode) {
+                    sb.append(String.format(rowFmtKey, keyName, usage, nodeId, portString)).append("\n");
+                    isFirstNode = false;
+                } else {
+                    sb.append(String.format(rowFmtSub, "", "", nodeId, portString)).append("\n");
+                }
+            }
+            sb.append(separator).append("\n");
+        }
 
         if (myConsole != null) myConsole.log("KeyManager", sb.toString());
         else System.out.println(sb.toString());
@@ -399,7 +458,7 @@ public class Main {
 
     private static void handleToggleKey(List<String> args, boolean enable) {
         if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "Usage: key <enable|disable> <name>");
+            ServerLogger.warnWithSource("Usage", "nkm.usage.toggle");
             return;
         }
         String name = args.get(0);
@@ -416,7 +475,7 @@ public class Main {
 
     private static void handleDelKey(List<String> args) {
         if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "Usage: key del <name>");
+            ServerLogger.warnWithSource("Usage", "nkm.usage.del");
             return;
         }
         String name = args.get(0);
@@ -453,15 +512,14 @@ public class Main {
                     case "add" -> handleAddKey(subArgs);
                     case "set" -> handleSetKey(subArgs);
                     case "map" -> handleMapKey(subArgs);
-                    case "delmap" -> handleDelMapKey(subArgs); // [Task 1]
-                    case "list" -> handleListKeys(subArgs);    // [Task 2]
-                    case "lp" -> handleLookupKey(subArgs);     // [Task 4]
+                    case "delmap" -> handleDelMapKey(subArgs);
+                    case "list" -> handleListKeys(subArgs);
+                    case "lp" -> handleLookupKey(subArgs);
                     case "del" -> handleDelKey(subArgs);
                     case "enable" -> handleToggleKey(subArgs, true);
                     case "disable" -> handleToggleKey(subArgs, false);
                     default -> {
-                        // [Task 3] 未知指令提示
-                        ServerLogger.errorWithSource("Command", "Unknown subcommand: " + subCmd);
+                        ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
                         printKeyUsage();
                     }
                 }
@@ -472,7 +530,7 @@ public class Main {
 
         myConsole.registerCommand("web", "Manage Web", args -> {
             if (args.size() < 2) {
-                ServerLogger.warnWithSource("Usage", "Usage: web <enable|disable> <key>");
+                ServerLogger.warnWithSource("Usage", "nkm.usage.web");
                 return;
             }
             String subCmd = args.get(0).toLowerCase();
@@ -485,111 +543,23 @@ public class Main {
             Database.setWebStatus(keyName, enable);
             ServerLogger.infoWithSource("WebManager", "nkm.info.webStatus", keyName, enable);
         });
-        // 【新增】顶级 list 指令 (直接显示占用详情)
-        myConsole.registerCommand("list", "Show active key sessions", args -> handleTopLevelList());
 
+        myConsole.registerCommand("list", "Show active key sessions", args -> handleTopLevelList());
         myConsole.registerCommand("reload", "Reload", args -> handleReload());
         myConsole.registerCommand("stop", "Stop", args -> System.exit(0));
     }
-    // 2. 新增 handleTopLevelList 方法 (实现高颜值表格)
-    private static void handleTopLevelList() {
-        // 获取数据快照
-        Map<String, Map<String, String>> activeSessions = SessionManager.getInstance().getActiveSessionsSnapshot();
-
-        if (activeSessions.isEmpty()) {
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
-            return;
-        }
-
-        // 预计算列宽 (动态适配)
-        int maxKeyLen = 8;    // "SERIAL"
-        int maxNodeLen = 8;   // "NODE ID"
-        int maxPortLen = 6;   // "PORT"
-
-        // 准备数据：Key -> UsageString (例如 "2 / 5")
-        Map<String, String> usageMap = new HashMap<>();
-
-        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
-            String keyName = entry.getKey();
-            Map<String, String> nodes = entry.getValue();
-
-            maxKeyLen = Math.max(maxKeyLen, keyName.length());
-
-            // 查询 DB 获取最大连接数
-            Map<String, Object> dbInfo = Database.getKeyPortInfo(keyName);
-            int maxConns = (dbInfo != null) ? (int) dbInfo.get("max_conns") : 0;
-            int currentConns = nodes.size();
-
-            usageMap.put(keyName, currentConns + " / " + maxConns);
-
-            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
-                maxNodeLen = Math.max(maxNodeLen, nodeEntry.getKey().length());
-                maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
-            }
-        }
-
-        // 增加一点 Padding 让表格不拥挤
-        maxKeyLen += 2;
-        maxNodeLen += 2;
-        maxPortLen += 2;
-
-        // 构建表格
-        // 格式: Key (Usage) | Node | Port
-        // 占用列固定宽度 12 即可 (够显示 "999 / 999")
-        String headerFmt = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
-        String rowFmtKey = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
-        String rowFmtSub = "   %-"+maxKeyLen+"s %-12s %-"+maxNodeLen+"s %-"+maxPortLen+"s";
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n");
-
-        // 分割线长度
-        int totalWidth = 3 + maxKeyLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
-        String separator = "-".repeat(totalWidth);
-
-        // 表头
-        sb.append(separator).append("\n");
-        sb.append(String.format(headerFmt, "SERIAL", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
-        sb.append(separator).append("\n");
-
-        // 数据行
-        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
-            String keyName = entry.getKey();
-            Map<String, String> nodes = entry.getValue();
-            String usage = usageMap.get(keyName);
-
-            boolean isFirstRow = true;
-            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
-                String nodeId = nodeEntry.getKey();
-                String port = nodeEntry.getValue();
-
-                if (isFirstRow) {
-                    // 第一行：显示 Key 和 占用比
-                    sb.append(String.format(rowFmtKey, keyName, usage, nodeId, port)).append("\n");
-                    isFirstRow = false;
-                } else {
-                    // 后续行：左侧留白，视觉上合并单元格
-                    sb.append(String.format(rowFmtSub, "", "", nodeId, port)).append("\n");
-                }
-            }
-            // 每个 Key 组之间加分割线
-            sb.append(separator).append("\n");
-        }
-
-        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
-        else System.out.println(sb.toString());
-    }
 
     private static void printKeyUsage() {
-        myConsole.log("Usage", "  key add <name> <balance> <expireTime> <port> <rate> [webHTML]");
-        myConsole.log("Usage", "  key set <name> [b=<bal>] [r=<rate>] [p=<port>] [t=<time>] [w=<web>]");
-        myConsole.log("Usage", "  key del <name>");
-        myConsole.log("Usage", "  key map <name> <nodeId> <port>");
-        myConsole.log("Usage", "  key delmap <name> <nodeId>");
-        myConsole.log("Usage", "  key list [nomap]");
-        myConsole.log("Usage", "  key lp <name>");
-        myConsole.log("Usage", "  key <enable|disable> <name>");
-        myConsole.log("Usage", "  web <enable|disable> <name>");
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.listActive"));
     }
 
     private static String validateAndFormatPortInput(String portInput) {
@@ -614,7 +584,7 @@ public class Main {
         try {
             return Double.parseDouble(str);
         } catch (Exception e) {
-            ServerLogger.errorWithSource("KeyManager", "Invalid value for " + fieldName + ": " + str);
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", fieldName, str);
             return null;
         }
     }
