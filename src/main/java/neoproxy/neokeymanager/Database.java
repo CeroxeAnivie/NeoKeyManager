@@ -424,6 +424,8 @@ public class Database {
         }
     }
 
+// 在 Database 类中找到 getBatchKeyMetadata 方法并完全替换
+
     public static Map<String, Protocol.KeyMetadata> getBatchKeyMetadata(List<String> keys) {
         Map<String, Protocol.KeyMetadata> result = new HashMap<>();
         if (keys == null || keys.isEmpty()) return result;
@@ -433,9 +435,13 @@ public class Database {
             inClause.append("?");
             if (i < keys.size() - 1) inClause.append(",");
         }
-        String sql = "SELECT name, balance, expire_time, is_enable FROM keys WHERE name IN (" + inClause + ")";
+
+        // 【修正】显式查询 rate, expire_time, enable_web
+        String sql = "SELECT name, balance, expire_time, is_enable, rate, enable_web FROM keys WHERE name IN (" + inClause + ")";
+
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             for (int i = 0; i < keys.size(); i++) stmt.setString(i + 1, keys.get(i));
+
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     Protocol.KeyMetadata meta = new Protocol.KeyMetadata();
@@ -444,7 +450,13 @@ public class Database {
                     String exp = rs.getString("expire_time");
                     boolean en = rs.getBoolean("is_enable");
 
+                    // 填充基础数据
                     meta.balance = bal;
+                    meta.rate = rs.getDouble("rate");
+                    meta.expireTime = exp;
+                    meta.enableWebHTML = rs.getBoolean("enable_web");
+
+                    // 业务逻辑判断
                     String msg = checkKeyValid(en, bal, exp);
                     if ("OK".equals(msg)) {
                         meta.isValid = true;
@@ -457,6 +469,7 @@ public class Database {
                 }
             }
         } catch (SQLException e) {
+            ServerLogger.error("Database", "nkm.db.metaBatchFail", e);
         }
         return result;
     }

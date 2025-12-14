@@ -60,11 +60,17 @@ public class Utils {
             if (val instanceof Map) {
                 sb.append(mapToJson((Map<?, ?>) val));
             } else if (val instanceof Protocol.KeyMetadata) {
-                // 序列化 KeyMetadata
+                // 【核心修复点】序列化 KeyMetadata，补充所有新字段
                 Protocol.KeyMetadata meta = (Protocol.KeyMetadata) val;
                 sb.append("{")
                         .append("\"isValid\":").append(meta.isValid).append(",")
                         .append("\"balance\":").append(meta.balance).append(",")
+                        // --- 新增字段 Start ---
+                        .append("\"rate\":").append(meta.rate).append(",")
+                        .append("\"enableWebHTML\":").append(meta.enableWebHTML).append(",")
+                        // expireTime 是字符串，需要加引号处理，且可能为 null
+                        .append("\"expireTime\":\"").append(escapeJson(meta.expireTime)).append("\",")
+                        // --- 新增字段 End ---
                         .append("\"reason\":\"").append(escapeJson(meta.reason)).append("\"")
                         .append("}");
             } else if (val instanceof String) {
