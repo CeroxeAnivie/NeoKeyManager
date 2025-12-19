@@ -123,15 +123,8 @@ public class Main {
             return;
         }
 
-        String defaultPort = (String) keyInfo.get("default_port");
-        // [修复] PortUtils -> Utils.isDynamicPort
-        boolean defaultIsDynamic = Utils.isDynamicPort(defaultPort);
-        boolean mapIsDynamic = Utils.isDynamicPort(validMapPort);
-
-        if (!defaultIsDynamic && mapIsDynamic) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.mapStaticToDynamic", name, defaultPort, validMapPort);
-            return;
-        }
+        // [重构] 移除了 "动态端口不能映射到单端口" 的限制
+        // 现在逻辑是：无论怎么映射，只要总连接数不超过 conn 即可。
 
         Database.addNodePort(name, nodeId, validMapPort);
         ServerLogger.infoWithSource("KeyManager", "nkm.info.mappingUpdated", name, nodeId, validMapPort);
@@ -167,7 +160,6 @@ public class Main {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
             return;
         }
-        // 复用 printKeyTable，传入过滤器
         printKeyTable(targetKey, false);
     }
 
@@ -183,16 +175,12 @@ public class Main {
             return;
         }
 
-        Map<String, Object> oldInfo = Database.getKeyPortInfo(name);
-        String oldPort = (String) oldInfo.get("default_port");
-        // [修复] PortUtils -> Utils.isDynamicPort
-        boolean oldIsDynamic = Utils.isDynamicPort(oldPort);
-
         Double newBalance = null;
         Double newRate = null;
         String newPort = null;
         String newExpireTime = null;
         Boolean newWeb = null;
+        Integer newMaxConns = null;
 
         for (int i = 1; i < args.size(); i++) {
             String param = args.get(i);
@@ -205,34 +193,53 @@ public class Main {
                     ServerLogger.errorWithSource("KeyManager", "nkm.error.portInvalid", rawPort);
                     return;
                 }
+            } else if (param.startsWith("c=") || param.startsWith("conn=")) {
+                // 支持 c=10 或 conn=10
+                String val = param.contains("conn=") ? param.substring(5) : param.substring(2);
+                newMaxConns = parseIntSafely(val, "max_conns");
             } else if (param.startsWith("t=")) newExpireTime = correctInputTime(param.substring(2));
             else if (param.startsWith("w=")) newWeb = parseBoolean(param.substring(2));
         }
 
-        boolean needCleanMap = false;
-        if (newPort != null) {
-            // [修复] PortUtils -> Utils.isDynamicPort
-            boolean newIsDynamic = Utils.isDynamicPort(newPort);
-            if (oldIsDynamic && !newIsDynamic) {
-                needCleanMap = true;
-                ServerLogger.warnWithSource("KeyManager", "nkm.warn.typeChangeClean", name);
-            }
+        Database.updateKey(name, newBalance, newRate, newPort, newExpireTime, newWeb, newMaxConns);
+
+        // 如果改了端口或连接数，可能需要强制重连以应用新规则，视业务需求而定，这里保持原逻辑
+        if (newPort != null || newMaxConns != null) {
+            SessionManager.getInstance().forceReleaseKey(name);
         }
-
-        Database.updateKey(name, newBalance, newRate, newPort, newExpireTime, newWeb);
-
-        if (needCleanMap) {
-            Database.deleteNodeMapsByKey(name);
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.mapsCleanedForCompatibility", name);
-        }
-
-        if (newPort != null) SessionManager.getInstance().forceReleaseKey(name);
 
         ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
     }
 
+    // [新增] 专门设置连接数的命令
+    private static void handleSetConn(List<String> args) {
+        if (args.size() != 2) {
+            myConsole.log("Usage", "Usage: key setconn <key> <num>");
+            return;
+        }
+        String name = args.get(0);
+        Integer num = parseIntSafely(args.get(1), "conn");
+
+        if (num == null || num < 1) {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", "conn", args.get(1));
+            return;
+        }
+
+        if (!Database.keyExists(name)) {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
+            return;
+        }
+
+        if (Database.setKeyMaxConns(name, num)) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
+            // 连接数变更，强制刷新
+            SessionManager.getInstance().forceReleaseKey(name);
+        } else {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.sqlFail");
+        }
+    }
+
     private static void handleListKeys(List<String> args) {
-        // 如果用户错误输入 key list active，兼容跳转
         if (args.contains("active")) {
             handleTopLevelList();
             return;
@@ -241,14 +248,28 @@ public class Main {
         printKeyTable(null, noMap);
     }
 
-    // 核心数据库表格打印逻辑
     private static void printKeyTable(String targetKeyFilter, boolean noMap) {
         List<Map<String, String>> rows = Database.getAllKeysRaw();
         if (rows.isEmpty()) {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
             return;
         }
+        // ... (保持原有打印逻辑，节省篇幅，核心逻辑未变)
+        // 建议在打印列中，CONNS 列显示 Database 中的 max_conns
+        // Database.getAllKeysRaw 已经包含了 max_conns
 
+        // 这里仅展示关键部分，其余代码与原Main一致
+        // ...
+
+        // 此处略去长篇幅的表格格式化代码，逻辑与原版一致
+        // 只需确保 Database.getAllKeysRaw 返回正确的 max_conns
+        // ...
+
+        // 临时简写复用原逻辑
+        originalPrintTableLogic(rows, targetKeyFilter, noMap);
+    }
+
+    private static void originalPrintTableLogic(List<Map<String, String>> rows, String targetKeyFilter, boolean noMap) {
         if (targetKeyFilter != null) {
             List<Map<String, String>> filtered = new ArrayList<>();
             for (Map<String, String> row : rows) {
@@ -275,6 +296,7 @@ public class Main {
         String headerFmt;
         String rowFmt;
 
+        // 注意：原有的 "CONNS" 列现在真正代表 max_conns，不再只是端口数量
         if (noMap) {
             headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
             rowFmt = "   %-16s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
@@ -289,9 +311,9 @@ public class Main {
 
         sb.append(separator).append("\n");
         if (noMap) {
-            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONNS", "EXPIRE", "WEB", "MAPS")).append("\n");
+            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
         } else {
-            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONNS", "EXPIRE", "WEB")).append("\n");
+            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
         }
         sb.append(separator).append("\n");
 
@@ -304,7 +326,7 @@ public class Main {
                             row.get("balance"),
                             row.get("rate"),
                             row.get("port"),
-                            row.get("conns"),
+                            row.get("conns"), // 这里显示的是 max_conns
                             row.get("expire"),
                             row.get("web"),
                             row.get("map_count")
@@ -334,7 +356,6 @@ public class Main {
         else System.out.println(sb.toString());
     }
 
-    // 活跃会话表格打印逻辑 (list 指令)
     private static void handleTopLevelList() {
         SessionManager sm = SessionManager.getInstance();
         Map<String, Map<String, String>> activeSessions = sm.getActiveSessionsSnapshot();
@@ -343,6 +364,8 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
+        // ... (保持原有的 list active 逻辑)
+        // 仅修改 usageMap 的获取逻辑，max_conns 依然从 DB 获取
 
         int maxKeyLen = 8;
         int maxNodeLen = 8;
@@ -446,8 +469,9 @@ public class Main {
             enableWebHTML = webStr.equals("true") || webStr.equals("1") || webStr.equals("on");
         }
 
-        // [修复] PortUtils -> Utils.calculatePortSize
+        // [默认值逻辑] 默认 conn 等于端口范围大小
         int maxConns = Utils.calculatePortSize(validatedPortStr);
+
         if (Database.addKey(name, balance, rate, expireTime, validatedPortStr, maxConns)) {
             if (enableWebHTML) {
                 Database.setWebStatus(name, true);
@@ -515,6 +539,7 @@ public class Main {
                 switch (subCmd) {
                     case "add" -> handleAddKey(subArgs);
                     case "set" -> handleSetKey(subArgs);
+                    case "setconn" -> handleSetConn(subArgs); // [新增]
                     case "map" -> handleMapKey(subArgs);
                     case "delmap" -> handleDelMapKey(subArgs);
                     case "list" -> handleListKeys(subArgs);
@@ -533,6 +558,7 @@ public class Main {
         });
 
         myConsole.registerCommand("web", "Manage Web", args -> {
+            // ... (web command logic same as before)
             if (args.size() < 2) {
                 ServerLogger.warnWithSource("Usage", "nkm.usage.web");
                 return;
@@ -556,6 +582,7 @@ public class Main {
     private static void printKeyUsage() {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
+        myConsole.log("Usage", "key setconn <key> <num> - Set max connections"); // 手动补充
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
@@ -587,6 +614,15 @@ public class Main {
     private static Double parseDoubleSafely(String str, String fieldName) {
         try {
             return Double.parseDouble(str);
+        } catch (Exception e) {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", fieldName, str);
+            return null;
+        }
+    }
+
+    private static Integer parseIntSafely(String str, String fieldName) {
+        try {
+            return Integer.parseInt(str);
         } catch (Exception e) {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", fieldName, str);
             return null;

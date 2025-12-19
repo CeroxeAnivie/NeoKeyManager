@@ -16,10 +16,8 @@ public class KeyHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) {
         try {
-            // 反爆破延迟
             Thread.sleep(15);
 
-            // 鉴权
             String auth = exchange.getRequestHeaders().getFirst("Authorization");
             if (auth == null || !auth.equals("Bearer " + Config.AUTH_TOKEN)) {
                 sendResponse(exchange, 401, "{\"error\":\"Unauthorized\"}");
@@ -30,7 +28,6 @@ public class KeyHandler implements HttpHandler {
             String method = exchange.getRequestMethod();
             InputStream body = exchange.getRequestBody();
 
-            // 路由分发
             if (path.equals(Protocol.API_GET_KEY) && "GET".equals(method)) {
                 handleGetKey(exchange);
             } else if (path.equals(Protocol.API_HEARTBEAT) && "POST".equals(method)) {
@@ -52,7 +49,6 @@ public class KeyHandler implements HttpHandler {
     }
 
     // ==================== 1. 注册 (GET /api/key) ====================
-    // NPS 启动连接时调用，必须在此处创建 Session
     private void handleGetKey(HttpExchange exchange) throws IOException {
         Map<String, String> params = Utils.parseQueryParams(exchange.getRequestURI().getQuery());
         String name = params.get("name");
@@ -63,29 +59,38 @@ public class KeyHandler implements HttpHandler {
             return;
         }
 
-        // 1. 获取数据库配置
-        Map<String, Object> info = Database.getKeyInfoFull(name, nodeId); // 包含 max_conns
+        Map<String, Object> info = Database.getKeyInfoFull(name, nodeId);
         if (info == null) {
             sendResponse(exchange, 404, "{\"error\":\"Key not found\"}");
             return;
         }
 
-        // 检查业务层错误 (如余额不足/禁用)
         if (info.containsKey("ERROR_CODE")) {
             sendResponse(exchange, (int) info.get("ERROR_CODE"), "{\"error\":\"" + info.get("MSG") + "\"}");
             return;
         }
 
-        // 2. 尝试创建 Session (霸占模式)
-        // 初始连接时，端口可能还未分配，暂时用 "INIT" 占位
+        // 获取端口和连接数限制
+        String finalPort = (String) info.get("port");
         int maxConns = (int) info.get("max_conns");
+
+        // [核心需求 3] 端口冲突预检查
+        // 如果 finalPort 是单端口（静态端口），且已被该 Key 在该 Node 上占用
+        // 则返回 409 No more ports available on <nodeid>
+        if (!Utils.isDynamicPort(finalPort)) {
+            if (SessionManager.getInstance().isSpecificPortActive(name, nodeId, finalPort)) {
+                // 特殊错误消息
+                sendResponse(exchange, 409, "{\"error\":\"No more ports available on " + nodeId + "\"}");
+                return;
+            }
+        }
+
+        // 尝试创建 Session (全局连接数检查)
         boolean success = SessionManager.getInstance().tryRegisterSession(name, nodeId, "INIT", maxConns);
 
         if (!success) {
-            // 并发已满，新的进不来
             sendResponse(exchange, 409, "{\"error\":\"Max connections reached (" + maxConns + ")\"}");
         } else {
-            // 成功，返回配置信息
             sendResponse(exchange, 200, Utils.toJson(info));
         }
     }
@@ -102,20 +107,17 @@ public class KeyHandler implements HttpHandler {
             return;
         }
 
-        // 简易查询 max_conns (不查余额，余额由 Sync 查)
         int maxConns = Database.getKeyMaxConns(serial);
         if (maxConns == -1) {
             sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_KILL, "Key Not Found"));
             return;
         }
 
-        // 尝试保活
         boolean alive = SessionManager.getInstance().keepAlive(serial, nodeId, port, maxConns);
 
         if (alive) {
             sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_OK, null));
         } else {
-            // Session 丢失且重新注册失败(满了) -> 杀死连接
             sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_KILL, "Max connections reached"));
         }
     }
@@ -125,12 +127,10 @@ public class KeyHandler implements HttpHandler {
         String json = readBody(bodyStream);
         Map<String, Double> trafficMap = Utils.parseTrafficMap(json);
 
-        // 1. 扣费
         if (!trafficMap.isEmpty()) {
             Database.deductBalanceBatch(trafficMap);
         }
 
-        // 2. 获取元数据 (检查是否需要因欠费而断开)
         List<String> keys = new ArrayList<>(trafficMap.keySet());
         Map<String, Protocol.KeyMetadata> metadata = Database.getBatchKeyMetadata(keys);
 
@@ -153,8 +153,6 @@ public class KeyHandler implements HttpHandler {
         sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_OK, "Released"));
     }
 
-    // ... [Helper Methods: sendResponse, readBody, toJsonStatus, extractJson] ...
-
     private void sendResponse(HttpExchange exchange, int code, String response) throws IOException {
         byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
@@ -173,7 +171,6 @@ public class KeyHandler implements HttpHandler {
         return "{\"status\":\"" + status + "\", \"message\":\"" + msg + "\"}";
     }
 
-    // 简易 JSON 提取器，建议使用真正的 JSON 库 (Gson/Fastjson) 替换
     private String extractJson(String json, String key) {
         if (json == null) return null;
         java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"");

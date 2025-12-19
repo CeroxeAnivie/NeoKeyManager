@@ -27,6 +27,7 @@ public class Database {
             Class.forName(DB_DRIVER);
             try (Connection conn = getConnection()) {
                 Statement stmt = conn.createStatement();
+                // 确保 max_conns 列存在
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS keys (
                                 name VARCHAR(50) PRIMARY KEY,
@@ -86,6 +87,18 @@ public class Database {
         }
     }
 
+    // [新增] 独立设置连接数
+    public static boolean setKeyMaxConns(String name, int maxConns) {
+        String sql = "UPDATE keys SET max_conns = ? WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, maxConns);
+            stmt.setString(2, name);
+            return stmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
     public static boolean setWebStatus(String name, boolean enable) {
         String sql = "UPDATE keys SET enable_web = ? WHERE name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -125,7 +138,8 @@ public class Database {
         }
     }
 
-    public static void updateKey(String name, Double balance, Double rate, String port, String expireTime, Boolean enableWeb) {
+    // [修改] 支持 maxConns 更新
+    public static void updateKey(String name, Double balance, Double rate, String port, String expireTime, Boolean enableWeb, Integer maxConns) {
         StringBuilder sql = new StringBuilder("UPDATE keys SET ");
         List<Object> params = new ArrayList<>();
         boolean first = true;
@@ -153,12 +167,18 @@ public class Database {
             params.add(enableWeb);
             first = false;
         }
+        if (maxConns != null) {
+            if (!first) sql.append(", ");
+            sql.append("max_conns = ?");
+            params.add(maxConns);
+            first = false;
+        }
         if (port != null) {
             if (!first) sql.append(", ");
-            sql.append("default_port = ?, max_conns = ?");
+            sql.append("default_port = ?");
             params.add(port);
-            // 【修改】使用 Utils.calculatePortSize
-            params.add(Utils.calculatePortSize(port));
+            // 注意：现在 updateKey 不再自动重置 max_conns，除非显式指定了 c=
+            // 如果用户只改端口，连接数配额保持不变，这是解耦后的正确逻辑。
             first = false;
         }
         sql.append(" WHERE name = ?");
@@ -226,7 +246,6 @@ public class Database {
         }
     }
 
-    // 批量扣费优化版
     public static void deductBalanceBatch(Map<String, Double> trafficMap) {
         if (trafficMap == null || trafficMap.isEmpty()) return;
         String sql = "UPDATE keys SET balance = balance - ? WHERE name = ?";
@@ -241,17 +260,6 @@ public class Database {
             conn.commit();
         } catch (SQLException e) {
             ServerLogger.error("Database", "nkm.db.deductFail", e);
-        }
-    }
-
-    // 兼容旧接口（如果 Main 需要）
-    public static void deductBalance(String name, double amount) {
-        String sql = "UPDATE keys SET balance = balance - ? WHERE name = ?";
-        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setDouble(1, amount);
-            stmt.setString(2, name);
-            stmt.executeUpdate();
-        } catch (SQLException e) {
         }
     }
 
@@ -339,33 +347,6 @@ public class Database {
         return result;
     }
 
-    public static Map<String, Object> getKeyInfoSimple(String name) {
-        String sql = "SELECT name, max_conns, is_enable, expire_time, balance FROM keys WHERE name = ?";
-        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, name);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                boolean isEnable = rs.getBoolean("is_enable");
-                double balance = rs.getDouble("balance");
-                String expireTime = rs.getString("expire_time");
-                int maxConns = rs.getInt("max_conns");
-                String msg = checkKeyValid(isEnable, balance, expireTime);
-                if (!"OK".equals(msg)) {
-                    Map<String, Object> err = new HashMap<>();
-                    err.put("ERROR_CODE", 403);
-                    err.put("MSG", msg);
-                    return err;
-                }
-                Map<String, Object> res = new HashMap<>();
-                res.put("name", rs.getString("name"));
-                res.put("max_conns", maxConns);
-                return res;
-            }
-        } catch (SQLException e) {
-        }
-        return null;
-    }
-
     public static int getKeyMaxConns(String name) {
         String sql = "SELECT max_conns FROM keys WHERE name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -412,9 +393,11 @@ public class Database {
                     stmt.setString(2, nodeId);
                     ResultSet rs = stmt.executeQuery();
                     if (rs.next()) {
-                        // 【修改】使用 Utils.truncatePortRange
-                        String finalPort = Utils.truncatePortRange(rs.getString("port"), maxConns);
-                        result.put("port", finalPort);
+                        // [关键修正] 不再截断端口范围！
+                        // 端口范围不再受 max_conns 物理限制，而是逻辑限制。
+                        // 如果映射了 10000-10005，就返回 10000-10005，NPS 自行挑选。
+                        // 真正的数量限制在 SessionManager 中控制。
+                        result.put("port", rs.getString("port"));
                     }
                 }
             }
@@ -423,8 +406,6 @@ public class Database {
             return null;
         }
     }
-
-// 在 Database 类中找到 getBatchKeyMetadata 方法并完全替换
 
     public static Map<String, Protocol.KeyMetadata> getBatchKeyMetadata(List<String> keys) {
         Map<String, Protocol.KeyMetadata> result = new HashMap<>();
@@ -436,7 +417,6 @@ public class Database {
             if (i < keys.size() - 1) inClause.append(",");
         }
 
-        // 【修正】显式查询 rate, expire_time, enable_web
         String sql = "SELECT name, balance, expire_time, is_enable, rate, enable_web FROM keys WHERE name IN (" + inClause + ")";
 
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -450,13 +430,11 @@ public class Database {
                     String exp = rs.getString("expire_time");
                     boolean en = rs.getBoolean("is_enable");
 
-                    // 填充基础数据
                     meta.balance = bal;
                     meta.rate = rs.getDouble("rate");
                     meta.expireTime = exp;
                     meta.enableWebHTML = rs.getBoolean("enable_web");
 
-                    // 业务逻辑判断
                     String msg = checkKeyValid(en, bal, exp);
                     if ("OK".equals(msg)) {
                         meta.isValid = true;

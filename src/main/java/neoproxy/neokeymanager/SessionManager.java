@@ -9,15 +9,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-/**
- * 工业级 Session 管理器 (Final Gold Version)
- * <p>
- * 逻辑闭环验证：
- * 1. 幽灵占位修复：INIT 与真实端口互斥，自动移除。
- * 2. 日志降噪：隐藏 INIT 过程日志。
- * 3. 严格扩容限制：无论通过 Register 还是 Heartbeat 扩容，均需检查 max_conns。
- * 4. 性能优化：仅在新端口接入时触锁检查，常规心跳无性能损耗。
- */
 public class SessionManager {
     private static final SessionManager INSTANCE = new SessionManager();
 
@@ -38,33 +29,28 @@ public class SessionManager {
         return INSTANCE;
     }
 
-    /**
-     * [核心] 尝试注册 Session
-     * 场景：新连接接入 / 掉线重连
-     */
+    // [核心] 尝试注册 Session (INIT阶段)
     public boolean tryRegisterSession(String keyName, String nodeId, String port, int maxConnections) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.computeIfAbsent(keyName, k -> new ConcurrentHashMap<>());
 
         synchronized (nodeMap) {
             NodeSession session = nodeMap.get(nodeId);
 
-            // 如果 Session 已存在，检查是否允许该端口接入
             if (session != null) {
                 if (!canAcceptPort(keyName, nodeMap, session, port, maxConnections)) {
-                    return false; // 拒绝扩容
+                    return false;
                 }
                 session.refreshPort(port);
                 return true;
             }
 
-            // 如果是新节点
+            // 新节点接入
             checkZombiesForKey(keyName, nodeMap);
             int currentTotal = countTotalPorts(nodeMap);
             if (currentTotal >= maxConnections) {
-                return false; // 总数已满
+                return false; // 全局连接数已满
             }
 
-            // 创建新 Session
             session = new NodeSession();
             session.refreshPort(port);
             nodeMap.put(nodeId, session);
@@ -74,10 +60,7 @@ public class SessionManager {
         }
     }
 
-    /**
-     * [核心] 心跳保活
-     * 场景：常规保活 / 恶意客户端强行扩容
-     */
+    // [核心] 心跳保活与扩容检查
     public boolean keepAlive(String keyName, String nodeId, String port, int maxConnections) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(keyName);
         if (nodeMap == null) {
@@ -86,24 +69,19 @@ public class SessionManager {
 
         NodeSession session = nodeMap.get(nodeId);
         if (session != null) {
-            // [性能优化] 99.9% 的情况是旧端口保活，直接通过，无需加锁检查
             if (session.containsPort(port)) {
                 session.refreshPort(port);
                 return true;
             }
 
-            // [逻辑闭环] 这是一个现有 Session 发来的“新端口”，必须检查容量！防止 Heartbeat 绕过限制
             synchronized (nodeMap) {
-                // 双重检查：防止在等待锁的过程中端口已经被加上了
                 if (session.containsPort(port)) {
                     session.refreshPort(port);
                     return true;
                 }
 
-                // 严格检查扩容权限
                 if (!canAcceptPort(keyName, nodeMap, session, port, maxConnections)) {
-                    // ServerLogger.warnWithSource("Session", "nkm.session.rejectedHeartbeatExpansion", keyName, nodeId, port);
-                    return false; // 拒绝该端口的心跳，通知客户端断开
+                    return false;
                 }
 
                 session.refreshPort(port);
@@ -115,25 +93,40 @@ public class SessionManager {
         }
     }
 
-    // ==================== 逻辑复用 ====================
-
     /**
-     * 统一判断逻辑：当前 Session 是否可以接纳这个端口？
-     * 包含了：INIT转正检查、僵尸清理、最大连接数检查
+     * [新增] 检查特定 Node 上的特定 Port 是否已经被占用
+     * 用于 KeyHandler 在握手阶段检测静态端口冲突
      */
+    public boolean isSpecificPortActive(String keyName, String nodeId, String port) {
+        if (port == null || "INIT".equals(port)) return false;
+
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(keyName);
+        if (nodeMap == null) return false;
+
+        NodeSession session = nodeMap.get(nodeId);
+        if (session == null) return false;
+
+        // 检查端口是否活跃（且不是过期僵尸）
+        if (session.containsPort(port)) {
+            Long lastBeat = session.activePorts.get(port);
+            // 这里做个二次确认，确保它没超时 (20秒)
+            return lastBeat != null && (System.currentTimeMillis() - lastBeat < Protocol.ZOMBIE_TIMEOUT_MS);
+        }
+        return false;
+    }
+
     private boolean canAcceptPort(String keyName, Map<String, NodeSession> nodeMap, NodeSession session, String port, int maxConnections) {
-        // 1. 如果端口已存在，直接允许
+        // 1. 端口已存在 -> 允许
         if (session.containsPort(port)) return true;
 
-        // 2. 如果是 INIT 转正 (INIT -> 真实端口)，视为状态切换，允许
+        // 2. INIT 转正 -> 允许
         boolean isInitTransition = !"INIT".equals(port) && session.containsPort("INIT");
         if (isInitTransition) return true;
 
-        // 3. 此时确认为“纯新增端口”，必须检查系统容量
-        checkZombiesForKey(keyName, nodeMap); // 临死前再抢救一下位置
+        // 3. 纯新增端口 -> 检查容量
+        checkZombiesForKey(keyName, nodeMap);
         int currentTotal = countTotalPorts(nodeMap);
 
-        // 如果满了，拒绝
         return currentTotal < maxConnections;
     }
 
@@ -143,8 +136,6 @@ public class SessionManager {
             session.markLogged(port);
         }
     }
-
-    // ==================== 辅助方法 ====================
 
     public void releaseSession(String keyName, String nodeId) {
         if (keyName == null || nodeId == null) return;
@@ -218,7 +209,6 @@ public class SessionManager {
         }
     }
 
-    // ==================== Inner Class ====================
     private static class NodeSession {
         final ConcurrentHashMap<String, Long> activePorts = new ConcurrentHashMap<>();
         final java.util.Set<String> loggedPorts = ConcurrentHashMap.newKeySet();
@@ -236,6 +226,9 @@ public class SessionManager {
         }
 
         synchronized int getPortCount() {
+            // INIT 占用名额吗？
+            // 通常 INIT 占 1 个连接数配额，直到它变成真实端口。
+            // 这样防止客户端疯狂发起连接占满 Session 表。
             return activePorts.size();
         }
 
