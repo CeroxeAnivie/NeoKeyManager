@@ -3,7 +3,7 @@ package neoproxy.neokeymanager;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
-import plethora.utils.MyConsole;
+import fun.ceroxe.api.utils.MyConsole;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
@@ -123,9 +123,6 @@ public class Main {
             return;
         }
 
-        // [重构] 移除了 "动态端口不能映射到单端口" 的限制
-        // 现在逻辑是：无论怎么映射，只要总连接数不超过 conn 即可。
-
         Database.addNodePort(name, nodeId, validMapPort);
         ServerLogger.infoWithSource("KeyManager", "nkm.info.mappingUpdated", name, nodeId, validMapPort);
     }
@@ -194,7 +191,6 @@ public class Main {
                     return;
                 }
             } else if (param.startsWith("c=") || param.startsWith("conn=")) {
-                // 支持 c=10 或 conn=10
                 String val = param.contains("conn=") ? param.substring(5) : param.substring(2);
                 newMaxConns = parseIntSafely(val, "max_conns");
             } else if (param.startsWith("t=")) newExpireTime = correctInputTime(param.substring(2));
@@ -203,7 +199,6 @@ public class Main {
 
         Database.updateKey(name, newBalance, newRate, newPort, newExpireTime, newWeb, newMaxConns);
 
-        // 如果改了端口或连接数，可能需要强制重连以应用新规则，视业务需求而定，这里保持原逻辑
         if (newPort != null || newMaxConns != null) {
             SessionManager.getInstance().forceReleaseKey(name);
         }
@@ -211,7 +206,6 @@ public class Main {
         ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
     }
 
-    // [新增] 专门设置连接数的命令
     private static void handleSetConn(List<String> args) {
         if (args.size() != 2) {
             myConsole.log("Usage", "Usage: key setconn <key> <num>");
@@ -232,7 +226,6 @@ public class Main {
 
         if (Database.setKeyMaxConns(name, num)) {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
-            // 连接数变更，强制刷新
             SessionManager.getInstance().forceReleaseKey(name);
         } else {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.sqlFail");
@@ -254,22 +247,7 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
             return;
         }
-        // ... (保持原有打印逻辑，节省篇幅，核心逻辑未变)
-        // 建议在打印列中，CONNS 列显示 Database 中的 max_conns
-        // Database.getAllKeysRaw 已经包含了 max_conns
 
-        // 这里仅展示关键部分，其余代码与原Main一致
-        // ...
-
-        // 此处略去长篇幅的表格格式化代码，逻辑与原版一致
-        // 只需确保 Database.getAllKeysRaw 返回正确的 max_conns
-        // ...
-
-        // 临时简写复用原逻辑
-        originalPrintTableLogic(rows, targetKeyFilter, noMap);
-    }
-
-    private static void originalPrintTableLogic(List<Map<String, String>> rows, String targetKeyFilter, boolean noMap) {
         if (targetKeyFilter != null) {
             List<Map<String, String>> filtered = new ArrayList<>();
             for (Map<String, String> row : rows) {
@@ -296,7 +274,6 @@ public class Main {
         String headerFmt;
         String rowFmt;
 
-        // 注意：原有的 "CONNS" 列现在真正代表 max_conns，不再只是端口数量
         if (noMap) {
             headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
             rowFmt = "   %-16s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
@@ -326,7 +303,7 @@ public class Main {
                             row.get("balance"),
                             row.get("rate"),
                             row.get("port"),
-                            row.get("conns"), // 这里显示的是 max_conns
+                            row.get("conns"),
                             row.get("expire"),
                             row.get("web"),
                             row.get("map_count")
@@ -364,8 +341,6 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
-        // ... (保持原有的 list active 逻辑)
-        // 仅修改 usageMap 的获取逻辑，max_conns 依然从 DB 获取
 
         int maxKeyLen = 8;
         int maxNodeLen = 8;
@@ -469,7 +444,6 @@ public class Main {
             enableWebHTML = webStr.equals("true") || webStr.equals("1") || webStr.equals("on");
         }
 
-        // [默认值逻辑] 默认 conn 等于端口范围大小
         int maxConns = Utils.calculatePortSize(validatedPortStr);
 
         if (Database.addKey(name, balance, rate, expireTime, validatedPortStr, maxConns)) {
@@ -484,6 +458,7 @@ public class Main {
         }
     }
 
+    // [核心修改] 使用 Strict 方法
     private static void handleToggleKey(List<String> args, boolean enable) {
         if (args.size() != 1) {
             ServerLogger.warnWithSource("Usage", "nkm.usage.toggle");
@@ -494,7 +469,8 @@ public class Main {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
             return;
         }
-        if (Database.setKeyStatus(name, enable)) {
+
+        if (Database.setKeyStatusStrict(name, enable)) {
             String status = enable ? "ENABLED" : "DISABLED";
             ServerLogger.infoWithSource("KeyManager", "nkm.info.keyStatus", name, status);
             if (!enable) SessionManager.getInstance().forceReleaseKey(name);
@@ -539,7 +515,7 @@ public class Main {
                 switch (subCmd) {
                     case "add" -> handleAddKey(subArgs);
                     case "set" -> handleSetKey(subArgs);
-                    case "setconn" -> handleSetConn(subArgs); // [新增]
+                    case "setconn" -> handleSetConn(subArgs);
                     case "map" -> handleMapKey(subArgs);
                     case "delmap" -> handleDelMapKey(subArgs);
                     case "list" -> handleListKeys(subArgs);
@@ -558,7 +534,6 @@ public class Main {
         });
 
         myConsole.registerCommand("web", "Manage Web", args -> {
-            // ... (web command logic same as before)
             if (args.size() < 2) {
                 ServerLogger.warnWithSource("Usage", "nkm.usage.web");
                 return;
@@ -582,7 +557,7 @@ public class Main {
     private static void printKeyUsage() {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
-        myConsole.log("Usage", "key setconn <key> <num> - Set max connections"); // 手动补充
+        myConsole.log("Usage", "key setconn <key> <num> - Set max connections");
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));

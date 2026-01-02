@@ -2,25 +2,32 @@ package neoproxy.neokeymanager;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+import neoproxy.neokeymanager.DTOs.ApiError;
+import neoproxy.neokeymanager.DTOs.KeyInfoResponse;
+import neoproxy.neokeymanager.DTOs.KeyStateResult;
+import neoproxy.neokeymanager.DTOs.KeyStatus;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
+/**
+ * API 请求处理器
+ * 职责：处理 HTTP 请求，进行权限校验，分发业务逻辑，返回标准 JSON
+ */
 public class KeyHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) {
         try {
-            Thread.sleep(15);
+            // 简单的防抖
+            Thread.sleep(10);
 
             String auth = exchange.getRequestHeaders().getFirst("Authorization");
             if (auth == null || !auth.equals("Bearer " + Config.AUTH_TOKEN)) {
-                sendResponse(exchange, 401, "{\"error\":\"Unauthorized\"}");
+                sendResponse(exchange, 401, new ApiError("Unauthorized", "Invalid Token", null));
                 return;
             }
 
@@ -37,144 +44,129 @@ public class KeyHandler implements HttpHandler {
             } else if (path.equals(Protocol.API_RELEASE) && "POST".equals(method)) {
                 handleRelease(exchange, body);
             } else {
-                sendResponse(exchange, 404, "{\"error\":\"Not Found\"}");
+                sendResponse(exchange, 404, new ApiError("Not Found", "Endpoint mismatch", null));
             }
+
         } catch (Exception e) {
             ServerLogger.error("API", "nkm.api.handleError", e);
             try {
-                sendResponse(exchange, 500, "{\"error\":\"Internal Error\"}");
+                sendResponse(exchange, 500, new ApiError("Internal Error", e.getMessage(), null));
             } catch (IOException ignored) {
             }
         }
     }
 
-    // ==================== 1. 注册 (GET /api/key) ====================
     private void handleGetKey(HttpExchange exchange) throws IOException {
         Map<String, String> params = Utils.parseQueryParams(exchange.getRequestURI().getQuery());
         String name = params.get("name");
         String nodeId = params.get("nodeId");
 
         if (name == null || nodeId == null) {
-            sendResponse(exchange, 400, "{\"error\":\"Missing params\"}");
+            sendResponse(exchange, 400, new ApiError("Bad Request", "Missing name or nodeId", null));
             return;
         }
 
-        Map<String, Object> info = Database.getKeyInfoFull(name, nodeId);
-        if (info == null) {
-            sendResponse(exchange, 404, "{\"error\":\"Key not found\"}");
+        Map<String, Object> dbData = Database.getKeyInfoFull(name, nodeId);
+
+        if (dbData == null) {
+            sendResponse(exchange, 404, new ApiError("Key Not Found", null, null));
             return;
         }
 
-        if (info.containsKey("ERROR_CODE")) {
-            sendResponse(exchange, (int) info.get("ERROR_CODE"), "{\"error\":\"" + info.get("MSG") + "\"}");
+        KeyStateResult state = (KeyStateResult) dbData.get("STATE_RESULT");
+
+        // 1. 手动禁用 -> 403
+        if (state.status() == KeyStatus.DISABLED) {
+            sendResponse(exchange, 403, new ApiError("Access Denied", state.reason(), KeyStatus.DISABLED));
             return;
         }
 
-        // 获取端口和连接数限制
-        String finalPort = (String) info.get("port");
-        int maxConns = (int) info.get("max_conns");
+        // 2. 暂停 (欠费/过期) -> 409 + 具体原因 (满足需求)
+        if (state.status() == KeyStatus.PAUSED) {
+            sendResponse(exchange, 409, new ApiError("Key Paused", state.reason(), KeyStatus.PAUSED));
+            return;
+        }
 
-        // [核心需求 3] 端口冲突预检查
-        // 如果 finalPort 是单端口（静态端口），且已被该 Key 在该 Node 上占用
-        // 则返回 409 No more ports available on <nodeid>
-        if (!Utils.isDynamicPort(finalPort)) {
-            if (SessionManager.getInstance().isSpecificPortActive(name, nodeId, finalPort)) {
-                // 特殊错误消息
-                sendResponse(exchange, 409, "{\"error\":\"No more ports available on " + nodeId + "\"}");
+        String port = (String) dbData.get("default_port");
+        int maxConns = (int) dbData.get("max_conns");
+
+        // 端口冲突检查
+        if (!Utils.isDynamicPort(port)) {
+            if (SessionManager.getInstance().isSpecificPortActive(name, nodeId, port)) {
+                sendResponse(exchange, 409, new ApiError("Port Conflict", "Port " + port + " is busy", KeyStatus.ENABLED));
                 return;
             }
         }
 
-        // 尝试创建 Session (全局连接数检查)
-        boolean success = SessionManager.getInstance().tryRegisterSession(name, nodeId, "INIT", maxConns);
-
-        if (!success) {
-            sendResponse(exchange, 409, "{\"error\":\"Max connections reached (" + maxConns + ")\"}");
-        } else {
-            sendResponse(exchange, 200, Utils.toJson(info));
-        }
-    }
-
-    // ==================== 2. 保活 (POST /api/heartbeat) ====================
-    private void handleHeartbeat(HttpExchange exchange, InputStream bodyStream) throws IOException {
-        String json = readBody(bodyStream);
-        String serial = extractJson(json, "serial");
-        String nodeId = extractJson(json, "nodeId");
-        String port = extractJson(json, "port");
-
-        if (serial == null || nodeId == null) {
-            sendResponse(exchange, 400, toJsonStatus(Protocol.STATUS_KILL, "Invalid Format"));
+        // 连接数检查
+        if (!SessionManager.getInstance().tryRegisterSession(name, nodeId, "INIT", maxConns)) {
+            sendResponse(exchange, 429, new ApiError("Too Many Connections", "Max: " + maxConns, KeyStatus.ENABLED));
             return;
         }
 
-        int maxConns = Database.getKeyMaxConns(serial);
-        if (maxConns == -1) {
-            sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_KILL, "Key Not Found"));
+        // 成功响应
+        KeyInfoResponse response = new KeyInfoResponse(
+                (String) dbData.get("name"),
+                (double) dbData.get("balance"),
+                (double) dbData.get("rate"),
+                (String) dbData.get("expireTime"),
+                true,
+                (boolean) dbData.get("enableWebHTML"),
+                port,
+                maxConns
+        );
+        sendResponse(exchange, 200, response);
+    }
+
+    private void handleHeartbeat(HttpExchange exchange, InputStream body) throws IOException {
+        Protocol.HeartbeatPayload payload = Utils.parseJson(body, Protocol.HeartbeatPayload.class);
+        if (payload == null || payload.serial == null) {
+            sendResponse(exchange, 400, new ApiError("Invalid Payload", null, null));
             return;
         }
 
-        boolean alive = SessionManager.getInstance().keepAlive(serial, nodeId, port, maxConns);
+        KeyStateResult currentState = Database.getKeyStatus(payload.serial);
 
-        if (alive) {
-            sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_OK, null));
+        // 状态异常 -> KILL
+        if (currentState == null || currentState.status() != KeyStatus.ENABLED) {
+            String msg = (currentState != null) ? currentState.reason() : "Key Lost";
+            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", msg));
+            return;
+        }
+
+        int maxConns = Database.getKeyMaxConns(payload.serial);
+        if (SessionManager.getInstance().keepAlive(payload.serial, payload.nodeId, payload.port, maxConns)) {
+            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_OK));
         } else {
-            sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_KILL, "Max connections reached"));
+            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", "Max Conns Exceeded"));
         }
     }
 
-    // ==================== 3. 结算 (POST /api/sync) ====================
-    private void handleSync(HttpExchange exchange, InputStream bodyStream) throws IOException {
-        String json = readBody(bodyStream);
-        Map<String, Double> trafficMap = Utils.parseTrafficMap(json);
-
-        if (!trafficMap.isEmpty()) {
-            Database.deductBalanceBatch(trafficMap);
-        }
-
-        List<String> keys = new ArrayList<>(trafficMap.keySet());
-        Map<String, Protocol.KeyMetadata> metadata = Database.getBatchKeyMetadata(keys);
+    private void handleSync(HttpExchange exchange, InputStream body) throws IOException {
+        Map<String, Double> traffic = Utils.parseTrafficMap(body);
+        if (!traffic.isEmpty()) Database.deductBalanceBatch(traffic);
 
         Protocol.SyncResponse resp = new Protocol.SyncResponse();
         resp.status = Protocol.STATUS_OK;
-        resp.metadata = metadata;
-
-        sendResponse(exchange, 200, Utils.toJson(resp));
+        resp.metadata = Database.getBatchKeyMetadata(traffic.keySet().stream().toList());
+        sendResponse(exchange, 200, resp);
     }
 
-    // ==================== 4. 释放 (POST /api/release) ====================
-    private void handleRelease(HttpExchange exchange, InputStream bodyStream) throws IOException {
-        String json = readBody(bodyStream);
-        String serial = extractJson(json, "serial");
-        String nodeId = extractJson(json, "nodeId");
-
-        if (serial != null && nodeId != null) {
-            SessionManager.getInstance().releaseSession(serial, nodeId);
+    private void handleRelease(HttpExchange exchange, InputStream body) throws IOException {
+        Protocol.ReleasePayload payload = Utils.parseJson(body, Protocol.ReleasePayload.class);
+        if (payload != null && payload.serial != null && payload.nodeId != null) {
+            SessionManager.getInstance().releaseSession(payload.serial, payload.nodeId);
         }
-        sendResponse(exchange, 200, toJsonStatus(Protocol.STATUS_OK, "Released"));
+        sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_OK));
     }
 
-    private void sendResponse(HttpExchange exchange, int code, String response) throws IOException {
-        byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+    private void sendResponse(HttpExchange exchange, int code, Object responseObj) throws IOException {
+        String json = Utils.toJson(responseObj);
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
         }
-    }
-
-    private String readBody(InputStream is) throws IOException {
-        return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-    }
-
-    private String toJsonStatus(String status, String msg) {
-        if (msg == null) return "{\"status\":\"" + status + "\"}";
-        return "{\"status\":\"" + status + "\", \"message\":\"" + msg + "\"}";
-    }
-
-    private String extractJson(String json, String key) {
-        if (json == null) return null;
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]+)\"");
-        java.util.regex.Matcher m = p.matcher(json);
-        return m.find() ? m.group(1) : null;
     }
 }
