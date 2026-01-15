@@ -2,6 +2,7 @@ package neoproxy.neokeymanager;
 
 import neoproxy.neokeymanager.DTOs.KeyStateResult;
 import neoproxy.neokeymanager.DTOs.KeyStatus;
+import neoproxy.neokeymanager.admin.AdminDTOs;
 
 import java.sql.*;
 import java.time.LocalDateTime;
@@ -11,26 +12,21 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * 数据库操作层 (完整版)
- * 包含了 Main.java CLI 所需的所有管理方法，以及 API 所需的状态机逻辑。
- */
 public class Database {
     private static final String DB_DRIVER = "org.h2.Driver";
     private static final String DB_USER = "sa";
     private static final String DB_PASSWORD = "";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy/M/d-HH:mm");
 
-    // DB 状态常量
     private static final String STATUS_ENABLED = "ENABLED";
     private static final String STATUS_DISABLED = "DISABLED";
     private static final String STATUS_PAUSED = "PAUSED";
 
-    // ANSI 颜色代码 (用于 CLI 输出)
     private static final String ANSI_RESET = "\u001B[0m";
     private static final String ANSI_GREEN = "\u001B[32m";
     private static final String ANSI_RED = "\u001B[31m";
     private static final String ANSI_YELLOW = "\u001B[33m";
+    private static final String ANSI_BLUE = "\u001B[34m";
 
     private static String getDbUrl() {
         return "jdbc:h2:" + Config.DB_PATH + ";DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000;DEFAULT_LOCK_TIMEOUT=10000";
@@ -42,7 +38,6 @@ public class Database {
             Class.forName(DB_DRIVER);
             try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
 
-                // 1. 建表
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS keys (
                                 name VARCHAR(50) PRIMARY KEY,
@@ -52,7 +47,8 @@ public class Database {
                                 default_port VARCHAR(50) NOT NULL,
                                 max_conns INT NOT NULL DEFAULT 1,
                                 status VARCHAR(20) DEFAULT 'ENABLED', 
-                                enable_web BOOLEAN DEFAULT FALSE
+                                enable_web BOOLEAN DEFAULT FALSE,
+                                is_single BOOLEAN DEFAULT FALSE
                             )
                         """);
 
@@ -67,16 +63,31 @@ public class Database {
                             )
                         """);
 
-                // 2. 无损升级检测
+                stmt.execute("""
+                            CREATE TABLE IF NOT EXISTS key_aliases (
+                                alias_name VARCHAR(50) PRIMARY KEY,
+                                target_name VARCHAR(50) NOT NULL,
+                                is_single BOOLEAN DEFAULT FALSE,
+                                FOREIGN KEY (target_name) REFERENCES keys(name) ON DELETE CASCADE
+                            )
+                        """);
+
                 migrateLegacySchema(conn);
 
-                // 3. 补全列
                 try {
                     stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS max_conns INT DEFAULT 1");
                 } catch (SQLException ignored) {
                 }
                 try {
                     stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS enable_web BOOLEAN DEFAULT FALSE");
+                } catch (SQLException ignored) {
+                }
+                try {
+                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS is_single BOOLEAN DEFAULT FALSE");
+                } catch (SQLException ignored) {
+                }
+                try {
+                    stmt.execute("ALTER TABLE key_aliases ADD COLUMN IF NOT EXISTS is_single BOOLEAN DEFAULT FALSE");
                 } catch (SQLException ignored) {
                 }
 
@@ -111,15 +122,144 @@ public class Database {
         return DriverManager.getConnection(getDbUrl(), DB_USER, DB_PASSWORD);
     }
 
-    // ==================== 核心状态机逻辑 ====================
+    public static String getRealKeyName(String input) {
+        if (input == null) return null;
+        if (keyExists(input)) return input;
 
-    /**
-     * 获取 Key 状态（包含自动写入 PAUSED 的逻辑）
-     */
-    public static KeyStateResult getKeyStatus(String name) {
-        String sql = "SELECT status, balance, expire_time FROM keys WHERE name = ?";
+        String sql = "SELECT target_name FROM key_aliases WHERE alias_name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, input);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return rs.getString("target_name");
+            }
+        } catch (SQLException ignored) {
+        }
+        return null;
+    }
+
+    public static boolean isAlias(String name) {
+        String sql = "SELECT 1 FROM key_aliases WHERE alias_name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, name);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException ignored) {
+        }
+        return false;
+    }
+
+    public static void addLink(String alias, String target) {
+        String sql = "INSERT INTO key_aliases (alias_name, target_name, is_single) VALUES (?, ?, FALSE)";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, alias);
+            stmt.setString(2, target);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            ServerLogger.error("Database", "nkm.db.updateFail", e, alias);
+            throw new RuntimeException(e.getMessage());
+        }
+    }
+
+    public static boolean deleteAlias(String alias) {
+        String sql = "DELETE FROM key_aliases WHERE alias_name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, alias);
+            return stmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    public static Map<String, String> getAllLinks() {
+        Map<String, String> map = new HashMap<>();
+        String sql = "SELECT alias_name, target_name, is_single FROM key_aliases";
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                String val = rs.getString("target_name");
+                if (rs.getBoolean("is_single")) {
+                    val += " [Single]";
+                }
+                map.put(rs.getString("alias_name"), val);
+            }
+        } catch (SQLException ignored) {
+        }
+        return map;
+    }
+
+    public static boolean setKeySingle(String name, boolean isSingle) {
+        if (isAlias(name)) {
+            String sql = "UPDATE key_aliases SET is_single = ? WHERE alias_name = ?";
+            try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setBoolean(1, isSingle);
+                stmt.setString(2, name);
+                return stmt.executeUpdate() > 0;
+            } catch (SQLException e) {
+                return false;
+            }
+        }
+        if (keyExists(name)) {
+            String sql = "UPDATE keys SET is_single = ? WHERE name = ?";
+            try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setBoolean(1, isSingle);
+                stmt.setString(2, name);
+                return stmt.executeUpdate() > 0;
+            } catch (SQLException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    public static boolean isNameSingle(String name) {
+        String aliasSql = "SELECT is_single FROM key_aliases WHERE alias_name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(aliasSql)) {
+            stmt.setString(1, name);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return rs.getBoolean("is_single");
+            }
+        } catch (SQLException ignored) {
+        }
+
+        String keySql = "SELECT is_single FROM keys WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(keySql)) {
+            stmt.setString(1, name);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return rs.getBoolean("is_single");
+            }
+        } catch (SQLException ignored) {
+        }
+
+        return false;
+    }
+
+    public static List<String> getSingleKeys() {
+        List<String> list = new ArrayList<>();
+        String sqlKeys = "SELECT name FROM keys WHERE is_single = TRUE";
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sqlKeys)) {
+            while (rs.next()) {
+                list.add(rs.getString("name") + " (RealKey)");
+            }
+        } catch (SQLException ignored) {
+        }
+
+        String sqlAlias = "SELECT alias_name, target_name FROM key_aliases WHERE is_single = TRUE";
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sqlAlias)) {
+            while (rs.next()) {
+                list.add(rs.getString("alias_name") + " (Alias -> " + rs.getString("target_name") + ")");
+            }
+        } catch (SQLException ignored) {
+        }
+
+        return list;
+    }
+
+    public static KeyStateResult getKeyStatus(String realName) {
+        String sql = "SELECT status, balance, expire_time FROM keys WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, realName);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (!rs.next()) return null;
 
@@ -134,13 +274,13 @@ public class Database {
                 String pauseReason = checkConditions(balance, expireTime);
                 if (pauseReason != null) {
                     if (!STATUS_PAUSED.equalsIgnoreCase(dbStatus)) {
-                        updateKeyStatusColumn(name, STATUS_PAUSED);
+                        updateKeyStatusColumn(realName, STATUS_PAUSED);
                     }
                     return new KeyStateResult(KeyStatus.PAUSED, pauseReason);
                 }
 
                 if (STATUS_PAUSED.equalsIgnoreCase(dbStatus)) {
-                    updateKeyStatusColumn(name, STATUS_ENABLED);
+                    updateKeyStatusColumn(realName, STATUS_ENABLED);
                 }
 
                 return new KeyStateResult(KeyStatus.ENABLED, "OK");
@@ -151,23 +291,23 @@ public class Database {
         }
     }
 
-    /**
-     * CLI Enable 命令调用的严格模式
-     */
     public static boolean setKeyStatusStrict(String name, boolean enable) {
+        String realName = getRealKeyName(name);
+        if (realName == null) return false;
+
         if (!enable) {
-            return updateKeyStatusColumn(name, STATUS_DISABLED);
+            return updateKeyStatusColumn(realName, STATUS_DISABLED);
         }
-        Map<String, Object> raw = getKeyRaw(name);
+        Map<String, Object> raw = getKeyRaw(realName);
         if (raw == null) return false;
 
         String failReason = checkConditions((Double) raw.get("balance"), (String) raw.get("expire_time"));
         if (failReason != null) {
-            updateKeyStatusColumn(name, STATUS_PAUSED);
-            ServerLogger.warnWithSource("KeyManager", "nkm.warn.enableRejected", name, failReason);
+            updateKeyStatusColumn(realName, STATUS_PAUSED);
+            ServerLogger.warnWithSource("KeyManager", "nkm.warn.enableRejected", realName, failReason);
             return false;
         }
-        return updateKeyStatusColumn(name, STATUS_ENABLED);
+        return updateKeyStatusColumn(realName, STATUS_ENABLED);
     }
 
     private static boolean updateKeyStatusColumn(String name, String status) {
@@ -194,9 +334,6 @@ public class Database {
         return null;
     }
 
-    // ==================== CLI 需要的缺失方法 (Restored) ====================
-
-    // 1. 设置最大连接数
     public static boolean setKeyMaxConns(String name, int maxConns) {
         String sql = "UPDATE keys SET max_conns = ? WHERE name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -208,7 +345,6 @@ public class Database {
         }
     }
 
-    // 2. 设置 Web 面板开关
     public static boolean setWebStatus(String name, boolean enable) {
         String sql = "UPDATE keys SET enable_web = ? WHERE name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -220,12 +356,11 @@ public class Database {
         }
     }
 
-    // 3. 获取单个 Key 的基础信息 (用于 handleMapKey 校验)
-    public static Map<String, Object> getKeyPortInfo(String name) {
+    public static Map<String, Object> getKeyPortInfo(String realName) {
         String sql = "SELECT default_port, max_conns FROM keys WHERE name = ?";
         Map<String, Object> info = new HashMap<>();
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, name);
+            stmt.setString(1, realName);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) {
                     info.put("default_port", rs.getString("default_port"));
@@ -238,13 +373,11 @@ public class Database {
         return null;
     }
 
-    // 4. 获取所有 Keys (用于 printKeyTable)
     public static List<Map<String, String>> getAllKeysRaw() {
         List<Map<String, String>> result = new ArrayList<>();
         Map<String, List<String>> mapInfo = new HashMap<>();
 
         try (Connection conn = getConnection()) {
-            // 获取映射信息
             try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT key_name, node_id, port FROM node_ports")) {
                 while (rs.next()) {
                     String k = rs.getString("key_name");
@@ -254,7 +387,6 @@ public class Database {
                 }
             }
 
-            // 获取 Key 信息并格式化
             String sql = "SELECT * FROM keys ORDER BY name ASC";
             try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sql)) {
                 while (rs.next()) {
@@ -262,19 +394,22 @@ public class Database {
                     String dbStatus = rs.getString("status");
                     double balance = rs.getDouble("balance");
                     String expireTime = rs.getString("expire_time");
+                    boolean isSingle = rs.getBoolean("is_single");
 
-                    // 计算显示状态图标
                     String icon;
                     if (STATUS_DISABLED.equalsIgnoreCase(dbStatus)) {
                         icon = ANSI_RED + "✘" + ANSI_RESET;
                     } else {
-                        // 即使 DB 是 ENABLED，也检查一下条件以显示准确的实时状态
                         String reason = checkConditions(balance, expireTime);
                         if (reason != null || STATUS_PAUSED.equalsIgnoreCase(dbStatus)) {
-                            icon = ANSI_YELLOW + "⏸" + ANSI_RESET; // Pause Icon
+                            icon = ANSI_YELLOW + "⏸" + ANSI_RESET;
                         } else {
                             icon = ANSI_GREEN + "✔" + ANSI_RESET;
                         }
+                    }
+
+                    if (isSingle) {
+                        icon += " " + ANSI_BLUE + "[S]" + ANSI_RESET;
                     }
 
                     Map<String, String> row = new HashMap<>();
@@ -310,17 +445,16 @@ public class Database {
         return result;
     }
 
-    // 5. 映射相关
-    public static void addNodePort(String name, String nodeId, String port) {
+    public static void addNodePort(String realName, String nodeId, String port) {
         String delSql = "DELETE FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
         String insertSql = "INSERT INTO node_ports (key_name, node_id, port) VALUES (?, ?, ?)";
         try (Connection conn = getConnection()) {
             conn.setAutoCommit(false);
             try (PreparedStatement delStmt = conn.prepareStatement(delSql); PreparedStatement insStmt = conn.prepareStatement(insertSql)) {
-                delStmt.setString(1, name);
+                delStmt.setString(1, realName);
                 delStmt.setString(2, nodeId);
                 delStmt.executeUpdate();
-                insStmt.setString(1, name);
+                insStmt.setString(1, realName);
                 insStmt.setString(2, nodeId);
                 insStmt.setString(3, port);
                 insStmt.executeUpdate();
@@ -336,18 +470,16 @@ public class Database {
         }
     }
 
-    public static boolean deleteNodeMap(String name, String nodeId) {
+    public static boolean deleteNodeMap(String realName, String nodeId) {
         String sql = "DELETE FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, name);
+            stmt.setString(1, realName);
             stmt.setString(2, nodeId);
             return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
             return false;
         }
     }
-
-    // ==================== 原有的通用 CRUD ====================
 
     public static boolean keyExists(String name) {
         String sql = "SELECT 1 FROM keys WHERE name = ?";
@@ -362,7 +494,7 @@ public class Database {
     }
 
     public static boolean addKey(String name, double balance, double rate, String expireTime, String port, int maxConns) {
-        String sql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web) VALUES (?, ?, ?, ?, ?, ?, 'ENABLED', FALSE)";
+        String sql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single) VALUES (?, ?, ?, ?, ?, ?, 'ENABLED', FALSE, FALSE)";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, name);
             stmt.setDouble(2, balance);
@@ -422,7 +554,6 @@ public class Database {
             for (int i = 0; i < params.size(); i++) stmt.setObject(i + 1, params.get(i));
             stmt.executeUpdate();
 
-            // 自动恢复逻辑
             Map<String, Object> raw = getKeyRaw(name);
             if (raw != null) {
                 String reason = checkConditions((Double) raw.get("balance"), (String) raw.get("expire_time"));
@@ -437,18 +568,61 @@ public class Database {
         }
     }
 
-    public static void deleteKey(String name) {
+    public static boolean renameKey(String oldName, String newName) {
+        String copyKeySql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single) " +
+                "SELECT ?, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single FROM keys WHERE name = ?";
+        String updatePortsSql = "UPDATE node_ports SET key_name = ? WHERE key_name = ?";
+        String updateAliasesSql = "UPDATE key_aliases SET target_name = ? WHERE target_name = ?";
+        String delOldKeySql = "DELETE FROM keys WHERE name = ?";
+
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try (PreparedStatement stmtCopy = conn.prepareStatement(copyKeySql);
+                 PreparedStatement stmtPorts = conn.prepareStatement(updatePortsSql);
+                 PreparedStatement stmtAliases = conn.prepareStatement(updateAliasesSql);
+                 PreparedStatement stmtDel = conn.prepareStatement(delOldKeySql)) {
+
+                stmtCopy.setString(1, newName);
+                stmtCopy.setString(2, oldName);
+                if (stmtCopy.executeUpdate() == 0) throw new SQLException("Failed to copy key");
+
+                stmtPorts.setString(1, newName);
+                stmtPorts.setString(2, oldName);
+                stmtPorts.executeUpdate();
+
+                stmtAliases.setString(1, newName);
+                stmtAliases.setString(2, oldName);
+                stmtAliases.executeUpdate();
+
+                stmtDel.setString(1, oldName);
+                stmtDel.executeUpdate();
+
+                conn.commit();
+                return true;
+            } catch (SQLException e) {
+                conn.rollback();
+                ServerLogger.error("Database", "nkm.db.renameFail", e);
+                return false;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    public static void deleteKey(String realName) {
         String sql = "DELETE FROM keys WHERE name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, name);
+            stmt.setString(1, realName);
             stmt.executeUpdate();
         } catch (SQLException ignored) {
         }
     }
 
-    public static int getKeyMaxConns(String name) {
+    public static int getKeyMaxConns(String realName) {
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement("SELECT max_conns FROM keys WHERE name = ?")) {
-            stmt.setString(1, name);
+            stmt.setString(1, realName);
             try (ResultSet rs = stmt.executeQuery()) {
                 if (rs.next()) return rs.getInt("max_conns");
             }
@@ -457,11 +631,9 @@ public class Database {
         return -1;
     }
 
-    // 批量扣费
     public static void deductBalanceBatch(Map<String, Double> trafficMap) {
         if (trafficMap == null || trafficMap.isEmpty()) return;
         String sqlDeduct = "UPDATE keys SET balance = balance - ? WHERE name = ?";
-        // 余额不足且当前为ENABLED时，改为PAUSED
         String sqlCheckPause = "UPDATE keys SET status = '" + STATUS_PAUSED + "' WHERE name = ? AND balance <= 0 AND status = '" + STATUS_ENABLED + "'";
 
         try (Connection conn = getConnection()) {
@@ -487,15 +659,14 @@ public class Database {
         }
     }
 
-    // 获取完整信息 (API用)
-    public static Map<String, Object> getKeyInfoFull(String name, String nodeId) {
+    public static Map<String, Object> getKeyInfoFull(String realName, String nodeId) {
         String sqlKey = "SELECT * FROM keys WHERE name = ?";
         String sqlNode = "SELECT port FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?)";
 
         try (Connection conn = getConnection()) {
             Map<String, Object> result = new HashMap<>();
             try (PreparedStatement stmt = conn.prepareStatement(sqlKey)) {
-                stmt.setString(1, name);
+                stmt.setString(1, realName);
                 ResultSet rs = stmt.executeQuery();
                 if (!rs.next()) return null;
 
@@ -511,12 +682,12 @@ public class Database {
                     if (reason != null) {
                         stateResult = new KeyStateResult(KeyStatus.PAUSED, reason);
                         if (!STATUS_PAUSED.equalsIgnoreCase(dbStatus)) {
-                            updateKeyStatusColumn(name, STATUS_PAUSED);
+                            updateKeyStatusColumn(realName, STATUS_PAUSED);
                         }
                     } else {
                         stateResult = new KeyStateResult(KeyStatus.ENABLED, "OK");
                         if (STATUS_PAUSED.equalsIgnoreCase(dbStatus)) {
-                            updateKeyStatusColumn(name, STATUS_ENABLED);
+                            updateKeyStatusColumn(realName, STATUS_ENABLED);
                         }
                     }
                 }
@@ -533,7 +704,7 @@ public class Database {
 
             if (nodeId != null && !nodeId.isBlank()) {
                 try (PreparedStatement stmt = conn.prepareStatement(sqlNode)) {
-                    stmt.setString(1, name);
+                    stmt.setString(1, realName);
                     stmt.setString(2, nodeId);
                     ResultSet rs = stmt.executeQuery();
                     if (rs.next()) result.put("default_port", rs.getString("port"));
@@ -545,15 +716,14 @@ public class Database {
         }
     }
 
-    // Sync Metadata (API用)
-    public static Map<String, Protocol.KeyMetadata> getBatchKeyMetadata(List<String> keys) {
+    public static Map<String, Protocol.KeyMetadata> getBatchKeyMetadata(List<String> realKeys) {
         Map<String, Protocol.KeyMetadata> result = new HashMap<>();
-        if (keys == null || keys.isEmpty()) return result;
+        if (realKeys == null || realKeys.isEmpty()) return result;
         StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < keys.size(); i++) sb.append(i == 0 ? "?" : ",?");
+        for (int i = 0; i < realKeys.size(); i++) sb.append(i == 0 ? "?" : ",?");
         String sql = "SELECT name,balance,expire_time,status,rate,enable_web FROM keys WHERE name IN (" + sb + ")";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
-            for (int i = 0; i < keys.size(); i++) stmt.setString(i + 1, keys.get(i));
+            for (int i = 0; i < realKeys.size(); i++) stmt.setString(i + 1, realKeys.get(i));
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     Protocol.KeyMetadata m = new Protocol.KeyMetadata();
@@ -578,6 +748,58 @@ public class Database {
                 }
             }
         } catch (SQLException e) {
+        }
+        return result;
+    }
+
+    public static List<AdminDTOs.KeyDetail> getAllKeysStructured(boolean includeMaps, String targetKeyName) {
+        List<AdminDTOs.KeyDetail> result = new ArrayList<>();
+        Map<String, List<AdminDTOs.MapNode>> mapInfo = new HashMap<>();
+
+        try (Connection conn = getConnection()) {
+            if (includeMaps) {
+                try (Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery("SELECT key_name, node_id, port FROM node_ports")) {
+                    while (rs.next()) {
+                        String k = rs.getString("key_name");
+                        mapInfo.computeIfAbsent(k, key -> new ArrayList<>())
+                                .add(new AdminDTOs.MapNode(rs.getString("node_id"), rs.getString("port")));
+                    }
+                }
+            }
+
+            String sql = "SELECT * FROM keys";
+            if (targetKeyName != null) {
+                sql += " WHERE name = ?";
+            } else {
+                sql += " ORDER BY name ASC";
+            }
+
+            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+                if (targetKeyName != null) {
+                    stmt.setString(1, targetKeyName);
+                }
+
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        AdminDTOs.KeyDetail k = new AdminDTOs.KeyDetail();
+                        k.name = rs.getString("name");
+                        k.balance = rs.getDouble("balance");
+                        k.rate = rs.getDouble("rate");
+                        k.port = rs.getString("default_port");
+                        k.maxConns = rs.getInt("max_conns");
+                        k.expireTime = rs.getString("expire_time");
+                        k.enableWeb = rs.getBoolean("enable_web");
+                        k.status = rs.getString("status");
+                        if (includeMaps) {
+                            k.maps = mapInfo.getOrDefault(k.name, new ArrayList<>());
+                        }
+                        result.add(k);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            ServerLogger.error("Database", "nkm.db.queryFail", e);
         }
         return result;
     }

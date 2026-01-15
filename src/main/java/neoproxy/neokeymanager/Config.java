@@ -11,6 +11,7 @@ import java.util.Properties;
 public class Config {
     public static int PORT = 8080;
     public static String AUTH_TOKEN = "default_token";
+    public static String ADMIN_TOKEN = "admin_secret"; // [新增] 管理员Token
     public static String DB_PATH = "./neokey_db";
     public static String SSL_CRT_PATH = null;
     public static String SSL_KEY_PATH = null;
@@ -37,6 +38,10 @@ public class Config {
 
             String t = props.getProperty("AUTH_TOKEN");
             if (t != null) AUTH_TOKEN = t.trim();
+
+            // [新增] 读取 ADMIN_TOKEN
+            String at = props.getProperty("ADMIN_TOKEN");
+            if (at != null) ADMIN_TOKEN = at.trim();
 
             String d = props.getProperty("DB_PATH");
             if (d != null) DB_PATH = d.trim();

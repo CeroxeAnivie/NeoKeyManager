@@ -4,6 +4,8 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import fun.ceroxe.api.utils.MyConsole;
+import neoproxy.neokeymanager.admin.AdminHandler;
+import neoproxy.neokeymanager.admin.KeyService;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
@@ -13,22 +15,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class Main {
-    private static final String PORT_INPUT_PATTERN = "^(\\d+)(?:-(\\d+))?$";
-    private static final Pattern PORT_INPUT_REGEX = Pattern.compile(PORT_INPUT_PATTERN);
-
+    private static final KeyService keyService = new KeyService();
     public static MyConsole myConsole;
     private static HttpServer httpServer;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
+        myConsole = new MyConsole("NeoKeyManager");
+        myConsole.printWelcome = false;
+
         checkARGS(args);
+
         try {
             Config.load();
-            myConsole = new MyConsole("NeoKeyManager");
-            myConsole.printWelcome = false;
             myConsole.log("NeoKeyManager", "\n" + """
                     
                        _____                                    \s
@@ -40,14 +40,16 @@ public class Main {
                                                                 \s
                                                                  \
                     """);
-            myConsole.log("NeoKeyManager", "Initializing...");
+
+            ServerLogger.infoWithSource("System", "nkm.system.init");
 
             Database.init();
             registerCommands();
             startWebServer();
             myConsole.start();
+
         } catch (Exception e) {
-            e.printStackTrace();
+            ServerLogger.error("System", "nkm.error.startupFail", e);
             System.exit(1);
         }
     }
@@ -61,9 +63,22 @@ public class Main {
         }
     }
 
+    public static void handleReload() {
+        new Thread(() -> {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ignored) {
+            }
+            ServerLogger.infoWithSource("System", "nkm.info.reloading");
+            Config.load();
+            startWebServer();
+        }, "NKM-Reloader").start();
+    }
+
     private static void startWebServer() {
         stopWebServer();
         boolean sslSuccess = false;
+
         if (Config.SSL_CRT_PATH != null && Config.SSL_KEY_PATH != null) {
             try {
                 SSLContext sslContext = SslFactory.createSSLContext(Config.SSL_CRT_PATH, Config.SSL_KEY_PATH);
@@ -87,6 +102,13 @@ public class Main {
         }
 
         if (httpServer != null) {
+            AdminHandler adminHandler = new AdminHandler();
+            httpServer.createContext("/api/exec", adminHandler);
+            httpServer.createContext("/api/query", adminHandler);
+            httpServer.createContext("/api/querynomap", adminHandler);
+            httpServer.createContext("/api/lp", adminHandler);
+            httpServer.createContext("/api/lpnomap", adminHandler);
+            httpServer.createContext("/api/reload", adminHandler);
             httpServer.createContext("/api", new KeyHandler());
             httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             httpServer.start();
@@ -100,138 +122,109 @@ public class Main {
         }
     }
 
-    // ==================== Command Handlers ====================
+    // ==================== Command Handlers (CLI) ====================
 
-    private static void handleMapKey(List<String> args) {
-        if (args.size() != 3) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.map");
-            return;
-        }
-        String name = args.get(0);
-        String nodeId = args.get(1);
-        String mapPort = args.get(2);
+    private static void registerCommands() {
+        myConsole.registerCommand("key", "Manage keys", args -> {
+            if (args.isEmpty()) {
+                printKeyUsage();
+                return;
+            }
+            String subCmd = args.get(0).toLowerCase();
+            List<String> subArgs = args.subList(1, args.size());
+            try {
+                String result = switch (subCmd) {
+                    case "add" -> keyService.execAddKey(subArgs);
+                    case "set" -> keyService.execSetKey(subArgs);
+                    case "setconn" -> keyService.execSetConn(subArgs);
+                    case "setsingle" -> keyService.execSetSingle(subArgs);
+                    case "delsingle" -> keyService.execDelSingle(subArgs);
+                    case "listsingle" -> keyService.execListSingle(subArgs);
+                    case "map" -> keyService.execMapKey(subArgs);
+                    case "delmap" -> keyService.execDelMap(subArgs);
+                    case "del" -> keyService.execDelKey(subArgs);
+                    case "enable" -> keyService.execEnable(subArgs, true);
+                    case "disable" -> keyService.execEnable(subArgs, false);
+                    case "link" -> keyService.execLinkKey(subArgs);
+                    case "listlink" -> keyService.execListLink(subArgs);
+                    case "list" -> {
+                        handleListKeys(subArgs);
+                        yield null;
+                    }
+                    case "lp" -> {
+                        handleLookupKey(subArgs);
+                        yield null;
+                    }
+                    case "web" -> keyService.execWeb(subArgs);
+                    default -> {
+                        ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
+                        printKeyUsage();
+                        yield null;
+                    }
+                };
 
-        String validMapPort = validateAndFormatPortInput(mapPort);
-        if (validMapPort == null) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.mappingPortInvalid", mapPort);
-            return;
-        }
+                if (result != null) {
+                    myConsole.log("KeyManager", result);
+                }
+            } catch (Exception e) {
+                ServerLogger.error("Command", "nkm.error.execFail", e);
+            }
+        });
 
-        Map<String, Object> keyInfo = Database.getKeyPortInfo(name);
-        if (keyInfo == null) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
-            return;
-        }
+        myConsole.registerCommand("web", "Manage Web", args -> {
+            try {
+                String res = keyService.execWeb(args);
+                myConsole.log("WebManager", res);
+            } catch (Exception e) {
+                ServerLogger.error("WebManager", "nkm.error.execFail", e);
+            }
+        });
 
-        Database.addNodePort(name, nodeId, validMapPort);
-        ServerLogger.infoWithSource("KeyManager", "nkm.info.mappingUpdated", name, nodeId, validMapPort);
+        // 这里使用了 listActive 键的含义
+        myConsole.registerCommand("list", ServerLogger.getMessage("nkm.usage.help.listActive"), args -> handleTopLevelList());
+        myConsole.registerCommand("reload", "Reload System", args -> handleReload());
+        myConsole.registerCommand("stop", "Stop System", args -> System.exit(0));
     }
 
-    private static void handleDelMapKey(List<String> args) {
-        if (args.size() != 2) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.delmap");
-            return;
-        }
-        String name = args.get(0);
-        String nodeId = args.get(1);
+    /**
+     * 【修正】现在完全使用 messages.properties 中的 help 键
+     * 覆盖了你截图中的所有灰色键值
+     */
+    private static void printKeyUsage() {
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
+        myConsole.log("Usage", "key setconn <key> <num> - Set max connections"); // 截图中没有 setconn 的 help key，暂时保留硬编码
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
+        myConsole.log("Usage", "key setsingle/delsingle/listsingle ... - Manage Single Mode");
 
-        if (!Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
-            return;
-        }
-
-        if (Database.deleteNodeMap(name, nodeId)) {
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.mappingDeleted", name, nodeId);
-        } else {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.delMapFailed", name, nodeId);
-        }
+        // 使用截图中最后的那个 Note
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
     }
 
     private static void handleLookupKey(List<String> args) {
         if (args.size() != 1) {
+            // 使用 nkm.usage.lp
             ServerLogger.warnWithSource("Usage", "nkm.usage.lp");
             return;
         }
         String targetKey = args.get(0);
-        if (!Database.keyExists(targetKey)) {
+        String realName = Database.getRealKeyName(targetKey);
+        if (realName == null) {
             ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
             return;
         }
-        printKeyTable(targetKey, false);
+        printKeyTable(realName, false);
     }
 
-    private static void handleSetKey(List<String> args) {
-        if (args.size() < 2) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.set");
-            return;
-        }
-        String name = args.get(0);
-
-        if (!Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFoundAdd", name);
-            return;
-        }
-
-        Double newBalance = null;
-        Double newRate = null;
-        String newPort = null;
-        String newExpireTime = null;
-        Boolean newWeb = null;
-        Integer newMaxConns = null;
-
-        for (int i = 1; i < args.size(); i++) {
-            String param = args.get(i);
-            if (param.startsWith("b=")) newBalance = parseDoubleSafely(param.substring(2), "balance");
-            else if (param.startsWith("r=")) newRate = parseDoubleSafely(param.substring(2), "rate");
-            else if (param.startsWith("p=")) {
-                String rawPort = param.substring(2);
-                newPort = validateAndFormatPortInput(rawPort);
-                if (newPort == null) {
-                    ServerLogger.errorWithSource("KeyManager", "nkm.error.portInvalid", rawPort);
-                    return;
-                }
-            } else if (param.startsWith("c=") || param.startsWith("conn=")) {
-                String val = param.contains("conn=") ? param.substring(5) : param.substring(2);
-                newMaxConns = parseIntSafely(val, "max_conns");
-            } else if (param.startsWith("t=")) newExpireTime = correctInputTime(param.substring(2));
-            else if (param.startsWith("w=")) newWeb = parseBoolean(param.substring(2));
-        }
-
-        Database.updateKey(name, newBalance, newRate, newPort, newExpireTime, newWeb, newMaxConns);
-
-        if (newPort != null || newMaxConns != null) {
-            SessionManager.getInstance().forceReleaseKey(name);
-        }
-
-        ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
-    }
-
-    private static void handleSetConn(List<String> args) {
-        if (args.size() != 2) {
-            myConsole.log("Usage", "Usage: key setconn <key> <num>");
-            return;
-        }
-        String name = args.get(0);
-        Integer num = parseIntSafely(args.get(1), "conn");
-
-        if (num == null || num < 1) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", "conn", args.get(1));
-            return;
-        }
-
-        if (!Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
-            return;
-        }
-
-        if (Database.setKeyMaxConns(name, num)) {
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.keyUpdated", name);
-            SessionManager.getInstance().forceReleaseKey(name);
-        } else {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.sqlFail");
-        }
-    }
-
+    // ... (HandleListKeys, printKeyTable, handleTopLevelList 保持原样，与上一版一致) ...
+    // 为了节省篇幅，这里省略重复的 Display Logic 代码，请直接复用上一版 Main.java 的底部代码
     private static void handleListKeys(List<String> args) {
         if (args.contains("active")) {
             handleTopLevelList();
@@ -247,7 +240,6 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
             return;
         }
-
         if (targetKeyFilter != null) {
             List<Map<String, String>> filtered = new ArrayList<>();
             for (Map<String, String> row : rows) {
@@ -263,136 +255,102 @@ public class Main {
                 return;
             }
         }
-
         int maxNameLen = 10;
         for (Map<String, String> row : rows) {
             String n = row.get("name");
             if (n != null) maxNameLen = Math.max(maxNameLen, n.length());
         }
         maxNameLen += 2;
-
-        String headerFmt;
-        String rowFmt;
-
+        String headerFmt, rowFmt;
         if (noMap) {
             headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
-            rowFmt = "   %-16s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
         } else {
             headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
-            rowFmt = "   %-16s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
         }
-
         StringBuilder sb = new StringBuilder();
         sb.append("\n");
         String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90));
-
         sb.append(separator).append("\n");
         if (noMap) {
-            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
         } else {
-            sb.append(String.format(headerFmt, "ENABLED", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
         }
         sb.append(separator).append("\n");
-
         for (Map<String, String> row : rows) {
             if ("KEY".equals(row.get("type"))) {
+                String mapCount = row.getOrDefault("map_count", "0");
                 if (noMap) {
                     sb.append(String.format(rowFmt,
-                            row.get("status_icon"),
-                            row.get("name"),
-                            row.get("balance"),
-                            row.get("rate"),
-                            row.get("port"),
-                            row.get("conns"),
-                            row.get("expire"),
-                            row.get("web"),
-                            row.get("map_count")
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web"), mapCount
                     )).append("\n");
                 } else {
                     sb.append(String.format(rowFmt,
-                            row.get("status_icon"),
-                            row.get("name"),
-                            row.get("balance"),
-                            row.get("rate"),
-                            row.get("port"),
-                            row.get("conns"),
-                            row.get("expire"),
-                            row.get("web")
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web")
                     )).append("\n");
                 }
             } else if ("MAP".equals(row.get("type"))) {
                 if (noMap) continue;
-                int indentSize = 11 + maxNameLen + 13 + 9;
-                String mapIndent = " ".repeat(indentSize);
+                String mapIndent = "   " + " ".repeat(25) + " ".repeat(maxNameLen);
                 sb.append(mapIndent).append(row.get("map_str")).append("\n");
             }
         }
         sb.append(separator);
-
         if (myConsole != null) myConsole.log("KeyManager", sb.toString());
-        else System.out.println(sb.toString());
     }
 
     private static void handleTopLevelList() {
         SessionManager sm = SessionManager.getInstance();
         Map<String, Map<String, String>> activeSessions = sm.getActiveSessionsSnapshot();
-
         if (activeSessions.isEmpty()) {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
-
-        int maxKeyLen = 8;
-        int maxNodeLen = 8;
-        int maxPortLen = 6;
-        Map<String, String> usageMap = new java.util.HashMap<>();
-
+        int maxNameLen = 16, maxNodeLen = 8, maxPortLen = 6;
+        Map<String, String> displayNames = new java.util.HashMap<>();
+        Map<String, String> occupancyMap = new java.util.HashMap<>();
         for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
-            String keyName = entry.getKey();
-            Map<String, String> nodes = entry.getValue();
-
-            maxKeyLen = Math.max(maxKeyLen, keyName.length());
-            Map<String, Object> dbInfo = Database.getKeyPortInfo(keyName);
-            int maxConns = (dbInfo != null) ? (int) dbInfo.get("max_conns") : 0;
-            int currentConns = sm.getActiveCount(keyName);
-            usageMap.put(keyName, currentConns + " / " + maxConns);
-
-            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+            String displayKey = entry.getKey();
+            String realKey = Database.getRealKeyName(displayKey);
+            String showName = displayKey;
+            if (realKey != null && !displayKey.equals(realKey)) showName = displayKey + " -> " + realKey;
+            displayNames.put(displayKey, showName);
+            maxNameLen = Math.max(maxNameLen, showName.length());
+            Map<String, Object> dbInfo = (realKey != null) ? Database.getKeyPortInfo(realKey) : null;
+            int maxConns = (dbInfo != null && dbInfo.containsKey("max_conns")) ? (int) dbInfo.get("max_conns") : 0;
+            int currentConns = (realKey != null) ? sm.getActiveCount(realKey) : 0;
+            occupancyMap.put(displayKey, currentConns + " / " + maxConns);
+            for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
                 maxNodeLen = Math.max(maxNodeLen, nodeEntry.getKey().length());
                 maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
             }
         }
-
-        maxKeyLen += 2;
-        maxNodeLen += 2;
-        maxPortLen += 2;
-
-        String headerFmt = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
-        String rowFmtKey = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
-        String rowFmtSub = "   %-" + maxKeyLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
-
+        maxNameLen += 2; maxNodeLen += 2; maxPortLen += 2;
+        String headerFmt = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtKey = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtSub = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
         StringBuilder sb = new StringBuilder();
         sb.append("\n");
-
-        int totalWidth = 3 + maxKeyLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
+        int totalWidth = 3 + maxNameLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
         String separator = "-".repeat(totalWidth);
-
         sb.append(separator).append("\n");
-        sb.append(String.format(headerFmt, "SERIAL", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
+        sb.append(String.format(headerFmt, "SESSION (Link->Real)", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
         sb.append(separator).append("\n");
-
         for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
-            String keyName = entry.getKey();
+            String displayKey = entry.getKey();
+            String showName = displayNames.get(displayKey);
+            String usage = occupancyMap.get(displayKey);
             Map<String, String> nodes = entry.getValue();
-            String usage = usageMap.get(keyName);
-
             boolean isFirstNode = true;
             for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
                 String nodeId = nodeEntry.getKey();
                 String portString = nodeEntry.getValue();
-
                 if (isFirstNode) {
-                    sb.append(String.format(rowFmtKey, keyName, usage, nodeId, portString)).append("\n");
+                    sb.append(String.format(rowFmtKey, showName, usage, nodeId, portString)).append("\n");
                     isFirstNode = false;
                 } else {
                     sb.append(String.format(rowFmtSub, "", "", nodeId, portString)).append("\n");
@@ -400,218 +358,6 @@ public class Main {
             }
             sb.append(separator).append("\n");
         }
-
         if (myConsole != null) myConsole.log("KeyManager", sb.toString());
-        else System.out.println(sb.toString());
-    }
-
-    private static void handleAddKey(List<String> args) {
-        if (args.size() != 5 && args.size() != 6) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.add");
-            ServerLogger.warnWithSource("Usage", "nkm.usage.portNote");
-            return;
-        }
-        String name = args.get(0);
-
-        if (Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyExists", name);
-            return;
-        }
-
-        Double balance = parseDoubleSafely(args.get(1), "balance");
-        if (balance == null) return;
-
-        String expireTimeInput = args.get(2);
-        String expireTime = correctInputTime(expireTimeInput);
-        if (expireTime == null) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.timeFormat", expireTimeInput);
-            return;
-        }
-
-        String portStr = args.get(3);
-        String validatedPortStr = validateAndFormatPortInput(portStr);
-        if (validatedPortStr == null) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.portInvalid", portStr);
-            return;
-        }
-
-        Double rate = parseDoubleSafely(args.get(4), "rate");
-        if (rate == null) return;
-
-        boolean enableWebHTML = false;
-        if (args.size() == 6) {
-            String webStr = args.get(5).toLowerCase();
-            enableWebHTML = webStr.equals("true") || webStr.equals("1") || webStr.equals("on");
-        }
-
-        int maxConns = Utils.calculatePortSize(validatedPortStr);
-
-        if (Database.addKey(name, balance, rate, expireTime, validatedPortStr, maxConns)) {
-            if (enableWebHTML) {
-                Database.setWebStatus(name, true);
-                ServerLogger.infoWithSource("KeyManager", "nkm.info.keyAddedWeb", name);
-            } else {
-                ServerLogger.infoWithSource("KeyManager", "nkm.info.keyAdded", name);
-            }
-        } else {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.sqlFail");
-        }
-    }
-
-    // [核心修改] 使用 Strict 方法
-    private static void handleToggleKey(List<String> args, boolean enable) {
-        if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.toggle");
-            return;
-        }
-        String name = args.get(0);
-        if (!Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
-            return;
-        }
-
-        if (Database.setKeyStatusStrict(name, enable)) {
-            String status = enable ? "ENABLED" : "DISABLED";
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.keyStatus", name, status);
-            if (!enable) SessionManager.getInstance().forceReleaseKey(name);
-        }
-    }
-
-    private static void handleDelKey(List<String> args) {
-        if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.del");
-            return;
-        }
-        String name = args.get(0);
-        if (!Database.keyExists(name)) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", name);
-            return;
-        }
-        Database.deleteKey(name);
-        SessionManager.getInstance().forceReleaseKey(name);
-        ServerLogger.infoWithSource("KeyManager", "nkm.info.keyDeleted", name);
-    }
-
-    private static void handleReload() {
-        Config.load();
-        Database.init();
-        startWebServer();
-        ServerLogger.infoWithSource("System", "nkm.info.reloading");
-    }
-
-    public static void shutdown() {
-        stopWebServer();
-    }
-
-    private static void registerCommands() {
-        myConsole.registerCommand("key", "Manage keys", args -> {
-            if (args.isEmpty()) {
-                printKeyUsage();
-                return;
-            }
-            String subCmd = args.get(0).toLowerCase();
-            List<String> subArgs = args.subList(1, args.size());
-            try {
-                switch (subCmd) {
-                    case "add" -> handleAddKey(subArgs);
-                    case "set" -> handleSetKey(subArgs);
-                    case "setconn" -> handleSetConn(subArgs);
-                    case "map" -> handleMapKey(subArgs);
-                    case "delmap" -> handleDelMapKey(subArgs);
-                    case "list" -> handleListKeys(subArgs);
-                    case "lp" -> handleLookupKey(subArgs);
-                    case "del" -> handleDelKey(subArgs);
-                    case "enable" -> handleToggleKey(subArgs, true);
-                    case "disable" -> handleToggleKey(subArgs, false);
-                    default -> {
-                        ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
-                        printKeyUsage();
-                    }
-                }
-            } catch (Exception e) {
-                ServerLogger.error("Command", "nkm.error.execFail", e);
-            }
-        });
-
-        myConsole.registerCommand("web", "Manage Web", args -> {
-            if (args.size() < 2) {
-                ServerLogger.warnWithSource("Usage", "nkm.usage.web");
-                return;
-            }
-            String subCmd = args.get(0).toLowerCase();
-            String keyName = args.get(1);
-            if (!Database.keyExists(keyName)) {
-                ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", keyName);
-                return;
-            }
-            boolean enable = subCmd.equals("enable");
-            Database.setWebStatus(keyName, enable);
-            ServerLogger.infoWithSource("WebManager", "nkm.info.webStatus", keyName, enable);
-        });
-
-        myConsole.registerCommand("list", "Show active key sessions", args -> handleTopLevelList());
-        myConsole.registerCommand("reload", "Reload", args -> handleReload());
-        myConsole.registerCommand("stop", "Stop", args -> System.exit(0));
-    }
-
-    private static void printKeyUsage() {
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
-        myConsole.log("Usage", "key setconn <key> <num> - Set max connections");
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.listActive"));
-    }
-
-    private static String validateAndFormatPortInput(String portInput) {
-        if (portInput == null) return null;
-        Matcher matcher = PORT_INPUT_REGEX.matcher(portInput.trim());
-        if (!matcher.matches()) return null;
-        try {
-            int start = Integer.parseInt(matcher.group(1));
-            if (start < 1 || start > 65535) return null;
-            if (matcher.group(2) != null) {
-                int end = Integer.parseInt(matcher.group(2));
-                if (end < 1 || end > 65535 || end < start) return null;
-                return start + "-" + end;
-            }
-            return String.valueOf(start);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    private static Double parseDoubleSafely(String str, String fieldName) {
-        try {
-            return Double.parseDouble(str);
-        } catch (Exception e) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", fieldName, str);
-            return null;
-        }
-    }
-
-    private static Integer parseIntSafely(String str, String fieldName) {
-        try {
-            return Integer.parseInt(str);
-        } catch (Exception e) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.invalidParam", fieldName, str);
-            return null;
-        }
-    }
-
-    private static Boolean parseBoolean(String str) {
-        if (str == null) return null;
-        return str.equalsIgnoreCase("true") || str.equals("1") || str.equalsIgnoreCase("on");
-    }
-
-    private static String correctInputTime(String time) {
-        if (time == null) return null;
-        if (!time.matches("^\\d{4}/\\d{1,2}/\\d{1,2}-\\d{1,2}:\\d{1,2}$")) return null;
-        return time;
     }
 }

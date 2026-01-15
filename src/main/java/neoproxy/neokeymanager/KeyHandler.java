@@ -13,17 +13,12 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-/**
- * API 请求处理器
- * 职责：处理 HTTP 请求，进行权限校验，分发业务逻辑，返回标准 JSON
- */
 public class KeyHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange exchange) {
         try {
-            // 简单的防抖
-            Thread.sleep(10);
+            Thread.sleep(5);
 
             String auth = exchange.getRequestHeaders().getFirst("Authorization");
             if (auth == null || !auth.equals("Bearer " + Config.AUTH_TOKEN)) {
@@ -58,30 +53,34 @@ public class KeyHandler implements HttpHandler {
 
     private void handleGetKey(HttpExchange exchange) throws IOException {
         Map<String, String> params = Utils.parseQueryParams(exchange.getRequestURI().getQuery());
-        String name = params.get("name");
+        String requestName = params.get("name");
         String nodeId = params.get("nodeId");
 
-        if (name == null || nodeId == null) {
+        if (requestName == null || nodeId == null) {
             sendResponse(exchange, 400, new ApiError("Bad Request", "Missing name or nodeId", null));
             return;
         }
 
-        Map<String, Object> dbData = Database.getKeyInfoFull(name, nodeId);
+        String realKeyName = Database.getRealKeyName(requestName);
+        if (realKeyName == null) {
+            sendResponse(exchange, 404, new ApiError("Key Not Found", null, null));
+            return;
+        }
 
+        Map<String, Object> dbData = Database.getKeyInfoFull(realKeyName, nodeId);
         if (dbData == null) {
             sendResponse(exchange, 404, new ApiError("Key Not Found", null, null));
             return;
         }
 
         KeyStateResult state = (KeyStateResult) dbData.get("STATE_RESULT");
+        boolean isSingle = Database.isNameSingle(requestName);
 
-        // 1. 手动禁用 -> 403
         if (state.status() == KeyStatus.DISABLED) {
             sendResponse(exchange, 403, new ApiError("Access Denied", state.reason(), KeyStatus.DISABLED));
             return;
         }
 
-        // 2. 暂停 (欠费/过期) -> 409 + 具体原因 (满足需求)
         if (state.status() == KeyStatus.PAUSED) {
             sendResponse(exchange, 409, new ApiError("Key Paused", state.reason(), KeyStatus.PAUSED));
             return;
@@ -90,23 +89,28 @@ public class KeyHandler implements HttpHandler {
         String port = (String) dbData.get("default_port");
         int maxConns = (int) dbData.get("max_conns");
 
-        // 端口冲突检查
+        // 端口冲突检查 (NPS 也会在 409 里处理 Port Conflict)
         if (!Utils.isDynamicPort(port)) {
-            if (SessionManager.getInstance().isSpecificPortActive(name, nodeId, port)) {
+            if (SessionManager.getInstance().isSpecificPortActive(realKeyName, nodeId, port)) {
                 sendResponse(exchange, 409, new ApiError("Port Conflict", "Port " + port + " is busy", KeyStatus.ENABLED));
                 return;
             }
         }
 
-        // 连接数检查
-        if (!SessionManager.getInstance().tryRegisterSession(name, nodeId, "INIT", maxConns)) {
-            sendResponse(exchange, 429, new ApiError("Too Many Connections", "Max: " + maxConns, KeyStatus.ENABLED));
+        // 注册 Session (鉴权核心逻辑)
+        if (!SessionManager.getInstance().tryRegisterSession(realKeyName, requestName, nodeId, "INIT", maxConns, isSingle)) {
+            String reason = isSingle ? "Global Single Mode Limit" : "Max Connections Reached";
+
+            // 【核心修复】
+            // 必须返回 409 Conflict！因为 NPS 源码中写死只在 if(code==409) 里判断 "Too Many Connections"
+            // 如果返回 429，NPS 会直接忽略错误类型。
+            // ApiError.error 必须包含 "Too Many Connections" 字符串。
+            sendResponse(exchange, 409, new ApiError("Too Many Connections", reason, KeyStatus.ENABLED));
             return;
         }
 
-        // 成功响应
         KeyInfoResponse response = new KeyInfoResponse(
-                (String) dbData.get("name"),
+                requestName,
                 (double) dbData.get("balance"),
                 (double) dbData.get("rate"),
                 (String) dbData.get("expireTime"),
@@ -125,37 +129,58 @@ public class KeyHandler implements HttpHandler {
             return;
         }
 
-        KeyStateResult currentState = Database.getKeyStatus(payload.serial);
+        String realKeyName = Database.getRealKeyName(payload.serial);
 
-        // 状态异常 -> KILL
+        if (realKeyName == null) {
+            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", "Key Not Found"));
+            return;
+        }
+
+        KeyStateResult currentState = Database.getKeyStatus(realKeyName);
+
         if (currentState == null || currentState.status() != KeyStatus.ENABLED) {
             String msg = (currentState != null) ? currentState.reason() : "Key Lost";
             sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", msg));
             return;
         }
 
-        int maxConns = Database.getKeyMaxConns(payload.serial);
-        if (SessionManager.getInstance().keepAlive(payload.serial, payload.nodeId, payload.port, maxConns)) {
+        boolean isSingle = Database.isNameSingle(payload.serial);
+        int maxConns = Database.getKeyMaxConns(realKeyName);
+
+        if (SessionManager.getInstance().keepAlive(realKeyName, payload.serial, payload.nodeId, payload.port, maxConns, isSingle)) {
             sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_OK));
         } else {
-            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", "Max Conns Exceeded"));
+            // 心跳失败，返回 STATUS_KILL
+            sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_KILL, "message", "Too Many Connections"));
         }
     }
 
     private void handleSync(HttpExchange exchange, InputStream body) throws IOException {
         Map<String, Double> traffic = Utils.parseTrafficMap(body);
-        if (!traffic.isEmpty()) Database.deductBalanceBatch(traffic);
+        Map<String, Double> realTraffic = new java.util.HashMap<>();
+
+        traffic.forEach((k, v) -> {
+            String real = Database.getRealKeyName(k);
+            if (real != null) {
+                realTraffic.merge(real, v, Double::sum);
+            }
+        });
+
+        if (!realTraffic.isEmpty()) Database.deductBalanceBatch(realTraffic);
 
         Protocol.SyncResponse resp = new Protocol.SyncResponse();
         resp.status = Protocol.STATUS_OK;
-        resp.metadata = Database.getBatchKeyMetadata(traffic.keySet().stream().toList());
+        resp.metadata = Database.getBatchKeyMetadata(realTraffic.keySet().stream().toList());
         sendResponse(exchange, 200, resp);
     }
 
     private void handleRelease(HttpExchange exchange, InputStream body) throws IOException {
         Protocol.ReleasePayload payload = Utils.parseJson(body, Protocol.ReleasePayload.class);
         if (payload != null && payload.serial != null && payload.nodeId != null) {
-            SessionManager.getInstance().releaseSession(payload.serial, payload.nodeId);
+            String realKeyName = Database.getRealKeyName(payload.serial);
+            if (realKeyName != null) {
+                SessionManager.getInstance().releaseSession(realKeyName, payload.nodeId);
+            }
         }
         sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_OK));
     }
