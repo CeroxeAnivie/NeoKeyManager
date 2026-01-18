@@ -27,128 +27,152 @@ public class SessionManager {
         return INSTANCE;
     }
 
-    public boolean tryRegisterSession(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isSingle) {
+    private String getSessionKey(String nodeId, String displayKey) {
+        return nodeId + "|" + displayKey;
+    }
+
+    /**
+     * 智能端口获取：在资源池范围内寻找一个当前全球未被占用的端口
+     */
+    public String findFirstFreePort(String realKeyName, String portRange) {
+        if (portRange == null) return null;
+        if (!portRange.contains("-")) return isPortGlobalActive(realKeyName, portRange) ? null : portRange;
+
+        String[] parts = portRange.split("-");
+        int start = Integer.parseInt(parts[0]);
+        int end = Integer.parseInt(parts[1]);
+
+        for (int p = start; p <= end; p++) {
+            String portStr = String.valueOf(p);
+            if (!isPortGlobalActive(realKeyName, portStr)) return portStr;
+        }
+        return null;
+    }
+
+    private boolean isPortGlobalActive(String realKeyName, String port) {
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+        if (nodeMap == null) return false;
+        long now = System.currentTimeMillis();
+        for (NodeSession s : nodeMap.values()) {
+            Long lastBeat = s.activePorts.get(port);
+            if (lastBeat != null && (now - lastBeat < Protocol.ZOMBIE_TIMEOUT_MS)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 核心：注册会话
+     */
+    public boolean tryRegisterSession(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.computeIfAbsent(realKeyName, k -> new ConcurrentHashMap<>());
+        String sessionKey = getSessionKey(nodeId, displayKeyName);
 
         synchronized (nodeMap) {
-            NodeSession session = nodeMap.get(nodeId);
+            checkZombiesForKey(realKeyName, nodeMap);
 
+            if (isAliasSingle && isAliasActiveGlobally(nodeMap, displayKeyName, sessionKey)) {
+                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, nodeId);
+                return false;
+            }
+
+            if (Database.isNameSingle(realKeyName) && isPoolActiveGlobally(nodeMap, sessionKey)) {
+                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", "Pool:" + realKeyName, nodeId);
+                return false;
+            }
+
+            NodeSession session = nodeMap.get(sessionKey);
             if (session != null) {
-                session.updateDisplayKey(displayKeyName, realKeyName);
-                if (!canAcceptPort(realKeyName, nodeMap, session, port, maxConnections, isSingle, nodeId)) {
-                    return false;
-                }
+                if (!canAcceptMorePorts(nodeMap, session, port, maxConnections, isAliasSingle)) return false;
                 session.refreshPort(port);
                 return true;
             }
 
-            checkZombiesForKey(realKeyName, nodeMap);
-
-            if (isSingle) {
-                if (isDisplayKeyInUse(nodeMap, displayKeyName, nodeId)) {
-                    ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, nodeId);
-                    return false;
-                }
-            }
-
-            int currentTotal = countTotalPorts(nodeMap);
-            if (currentTotal >= maxConnections) {
-                return false;
-            }
+            if (countTotalPorts(nodeMap) >= maxConnections) return false;
 
             session = new NodeSession(displayKeyName);
             session.refreshPort(port);
-            nodeMap.put(nodeId, session);
-
-            logConnection(session.displayKey, nodeId, port, session);
+            nodeMap.put(sessionKey, session);
+            logConnection(displayKeyName, nodeId, port, session);
             return true;
         }
     }
 
-    public boolean keepAlive(String realKeyName, String incomingSerial, String nodeId, String port, int maxConnections, boolean isSingle) {
+    /**
+     * 核心：心跳维持 (修复了参数对不上的问题)
+     */
+    public boolean keepAlive(String realKeyName, String incomingSerial, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
+        String sessionKey = getSessionKey(nodeId, incomingSerial);
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap == null)
-            return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isSingle);
+            return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle);
 
-        NodeSession session = nodeMap.get(nodeId);
+        NodeSession session = nodeMap.get(sessionKey);
         if (session != null) {
-            session.updateDisplayKey(incomingSerial, realKeyName);
             if (session.containsPort(port)) {
                 session.refreshPort(port);
                 return true;
             }
             synchronized (nodeMap) {
-                if (session.containsPort(port)) {
-                    session.refreshPort(port);
-                    return true;
-                }
-                if (!canAcceptPort(realKeyName, nodeMap, session, port, maxConnections, isSingle, nodeId)) {
-                    return false;
-                }
+                checkZombiesForKey(realKeyName, nodeMap);
+                // 修复：这里之前传了 6 个参数，导致编译报错，现在改为正确的 5 个
+                if (!canAcceptMorePorts(nodeMap, session, port, maxConnections, isAliasSingle)) return false;
                 session.refreshPort(port);
-                logConnection(session.displayKey, nodeId, port, session);
                 return true;
             }
-        } else {
-            return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isSingle);
         }
+        return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle);
     }
 
     public boolean isSpecificPortActive(String realKeyName, String nodeId, String port) {
-        if (port == null || "INIT".equals(port)) return false;
-        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
-        if (nodeMap == null) return false;
-        NodeSession session = nodeMap.get(nodeId);
-        if (session == null) return false;
-        if (session.containsPort(port)) {
-            Long lastBeat = session.activePorts.get(port);
-            return lastBeat != null && (System.currentTimeMillis() - lastBeat < Protocol.ZOMBIE_TIMEOUT_MS);
-        }
-        return false;
+        return isPortGlobalActive(realKeyName, port);
     }
 
-    private boolean canAcceptPort(String keyName, Map<String, NodeSession> nodeMap, NodeSession session, String port, int maxConnections, boolean isSingle, String currentNodeId) {
-        if (session.containsPort(port)) return true;
-        boolean isInitTransition = !"INIT".equals(port) && session.containsPort("INIT");
-        if (isInitTransition) return true;
-
-        checkZombiesForKey(keyName, nodeMap);
-
-        if (isSingle) {
-            if (isDisplayKeyInUse(nodeMap, session.displayKey, currentNodeId)) return false;
-            if (session.getPortCount() > 0) return false;
-        }
-
-        int currentTotal = countTotalPorts(nodeMap);
-        return currentTotal < maxConnections;
-    }
-
-    private boolean isDisplayKeyInUse(Map<String, NodeSession> nodeMap, String targetDisplayKey, String currentNodeId) {
-        if (targetDisplayKey == null) return false;
+    private boolean isAliasActiveGlobally(Map<String, NodeSession> nodeMap, String alias, String currentSessionKey) {
         for (Map.Entry<String, NodeSession> entry : nodeMap.entrySet()) {
-            String nid = entry.getKey();
-            NodeSession sess = entry.getValue();
-            if (nid.equals(currentNodeId)) continue;
-            if (targetDisplayKey.equals(sess.displayKey)) return true;
+            if (entry.getKey().equals(currentSessionKey)) continue;
+            if (alias.equals(entry.getValue().displayKey) && entry.getValue().getLivePortCount() > 0) return true;
         }
         return false;
     }
 
-    private void logConnection(String displayKey, String nodeId, String port, NodeSession session) {
-        if (!"INIT".equals(port) && !session.hasLogged(port)) {
-            ServerLogger.infoWithSource("Session", "nkm.session.connected", displayKey, nodeId, port);
-            session.markLogged(port);
+    private boolean isPoolActiveGlobally(Map<String, NodeSession> nodeMap, String currentSessionKey) {
+        for (Map.Entry<String, NodeSession> entry : nodeMap.entrySet()) {
+            if (entry.getKey().equals(currentSessionKey)) continue;
+            if (entry.getValue().getLivePortCount() > 0) return true;
         }
+        return false;
+    }
+
+    // 辅助方法：参数为 5 个
+    private boolean canAcceptMorePorts(Map<String, NodeSession> nodeMap, NodeSession session, String port, int maxConnections, boolean isAliasS) {
+        if (session.containsPort(port)) return true;
+        if (!"INIT".equals(port) && session.containsPort("INIT")) return true;
+        if (isAliasS && session.getLivePortCount() >= 1) return false;
+        return countTotalPorts(nodeMap) < maxConnections;
+    }
+
+    public int getActiveCount(String realKeyName) {
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+        return (nodeMap == null) ? 0 : countTotalPorts(nodeMap);
+    }
+
+    private int countTotalPorts(Map<String, NodeSession> nodeMap) {
+        int sum = 0;
+        for (NodeSession s : nodeMap.values()) sum += s.getLivePortCount();
+        return sum;
     }
 
     public void releaseSession(String realKeyName, String nodeId) {
-        if (realKeyName == null || nodeId == null) return;
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap != null) {
             synchronized (nodeMap) {
-                NodeSession removed = nodeMap.remove(nodeId);
-                if (removed != null) {
-                    ServerLogger.infoWithSource("Session", "nkm.session.released", removed.displayKey, nodeId);
+                Iterator<Map.Entry<String, NodeSession>> it = nodeMap.entrySet().iterator();
+                while (it.hasNext()) {
+                    Map.Entry<String, NodeSession> entry = it.next();
+                    if (entry.getKey().startsWith(nodeId + "|")) {
+                        ServerLogger.infoWithSource("Session", "nkm.session.released", entry.getValue().displayKey, nodeId);
+                        it.remove();
+                    }
                 }
                 if (nodeMap.isEmpty()) sessions.remove(realKeyName);
             }
@@ -157,36 +181,6 @@ public class SessionManager {
 
     public void forceReleaseKey(String realKeyName) {
         sessions.remove(realKeyName);
-    }
-
-    public int getActiveCount(String realKeyName) {
-        Map<String, NodeSession> nodeMap = sessions.get(realKeyName);
-        if (nodeMap == null) return 0;
-        synchronized (nodeMap) {
-            return countTotalPorts(nodeMap);
-        }
-    }
-
-    public Map<String, Map<String, String>> getActiveSessionsSnapshot() {
-        Map<String, Map<String, String>> snapshot = new HashMap<>();
-        sessions.forEach((realKey, nodeMap) -> {
-            nodeMap.forEach((nodeId, session) -> {
-                String dKey = session.displayKey;
-                String portsStr = session.getFormattedPorts();
-                if (!portsStr.isEmpty()) {
-                    snapshot.computeIfAbsent(dKey, k -> new HashMap<>()).put(nodeId, portsStr);
-                }
-            });
-        });
-        return snapshot;
-    }
-
-    private int countTotalPorts(Map<String, NodeSession> nodeMap) {
-        int sum = 0;
-        for (NodeSession s : nodeMap.values()) {
-            sum += s.getPortCount();
-        }
-        return sum;
     }
 
     private void checkZombies() {
@@ -203,32 +197,42 @@ public class SessionManager {
         Iterator<Map.Entry<String, NodeSession>> it = nodeMap.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<String, NodeSession> entry = it.next();
-            entry.getValue().activePorts.entrySet().removeIf(e -> (now - e.getValue()) > Protocol.ZOMBIE_TIMEOUT_MS);
-            if (entry.getValue().activePorts.isEmpty()) {
-                ServerLogger.infoWithSource("Session", "nkm.session.timeout", entry.getValue().displayKey, entry.getKey());
+            String sKey = entry.getKey();
+            NodeSession s = entry.getValue();
+            s.activePorts.entrySet().removeIf(e -> (now - e.getValue()) > Protocol.ZOMBIE_TIMEOUT_MS);
+            if (s.activePorts.isEmpty()) {
+                String nodeId = sKey.contains("|") ? sKey.split("\\|")[0] : "unknown";
+                ServerLogger.infoWithSource("Session", "nkm.session.timeout", s.displayKey, nodeId);
                 it.remove();
             }
+        }
+    }
+
+    public Map<String, Map<String, String>> getActiveSessionsSnapshot() {
+        Map<String, Map<String, String>> snapshot = new HashMap<>();
+        sessions.forEach((realKey, nodeMap) -> {
+            nodeMap.forEach((sessionKey, session) -> {
+                String nodeId = sessionKey.contains("|") ? sessionKey.split("\\|")[0] : sessionKey;
+                snapshot.computeIfAbsent(session.displayKey, k -> new HashMap<>()).put(nodeId, session.getFormattedPorts());
+            });
+        });
+        return snapshot;
+    }
+
+    private void logConnection(String displayKey, String nodeId, String port, NodeSession session) {
+        if (!"INIT".equals(port) && !session.hasLogged(port)) {
+            ServerLogger.infoWithSource("Session", "nkm.session.connected", displayKey, nodeId, port);
+            session.markLogged(port);
         }
     }
 
     private static class NodeSession {
         final ConcurrentHashMap<String, Long> activePorts = new ConcurrentHashMap<>();
         final java.util.Set<String> loggedPorts = ConcurrentHashMap.newKeySet();
-        volatile String displayKey;
+        final String displayKey;
 
         NodeSession(String displayKey) {
             this.displayKey = displayKey;
-        }
-
-        void updateDisplayKey(String newDisplay, String realKey) {
-            if (newDisplay == null || newDisplay.isBlank()) return;
-            boolean isNewIsReal = newDisplay.equals(realKey);
-            boolean isCurrentIsReal = this.displayKey.equals(realKey);
-            if (!isNewIsReal) {
-                this.displayKey = newDisplay;
-            } else if (isCurrentIsReal) {
-                this.displayKey = newDisplay;
-            }
         }
 
         boolean containsPort(String p) {
@@ -236,15 +240,13 @@ public class SessionManager {
         }
 
         synchronized void refreshPort(String p) {
-            long now = System.currentTimeMillis();
-            activePorts.put(p, now);
-            if (!"INIT".equals(p)) {
-                activePorts.remove("INIT");
-            }
+            activePorts.put(p, System.currentTimeMillis());
+            if (!"INIT".equals(p)) activePorts.remove("INIT");
         }
 
-        synchronized int getPortCount() {
-            return activePorts.size();
+        synchronized int getLivePortCount() {
+            long now = System.currentTimeMillis();
+            return (int) activePorts.values().stream().filter(t -> (now - t) < Protocol.ZOMBIE_TIMEOUT_MS).count();
         }
 
         boolean hasLogged(String p) {
@@ -256,11 +258,7 @@ public class SessionManager {
         }
 
         synchronized String getFormattedPorts() {
-            if (activePorts.isEmpty()) return "";
-            return activePorts.keySet().stream()
-                    .sorted()
-                    .map(p -> p.equals("INIT") ? "Negotiating..." : p)
-                    .collect(Collectors.joining(" "));
+            return activePorts.keySet().stream().sorted().map(p -> p.equals("INIT") ? "..." : p).collect(Collectors.joining(" "));
         }
     }
 }
