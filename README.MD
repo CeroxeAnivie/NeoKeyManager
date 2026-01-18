@@ -1,6 +1,6 @@
 # NeoKeyManager
 
-![Java](https://img.shields.io/badge/Java-21%2B-orange?style=flat-square) ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square) ![Status](https://img.shields.io/badge/Status-Production%20Ready-green?style=flat-square) ![Version](https://img.shields.io/badge/Version-1.2.1-purple?style=flat-square)
+![Java](https://img.shields.io/badge/Java-21%2B-orange?style=flat-square) ![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square) ![Status](https://img.shields.io/badge/Status-Production%20Ready-green?style=flat-square) 
 
 
 **NeoKeyManager (NKM)** 是专为 [NeoProxyServer](https://github.com/CeroxeAnivie/NeoProxyServer) 设计的企业级分布式鉴权中心。
