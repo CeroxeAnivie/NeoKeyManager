@@ -123,8 +123,10 @@ public class IntegrationTest {
 
         boolean hasA = false, hasB = false;
         for (JsonNode m : maps) {
-            if (m.get("nodeId").asText().equalsIgnoreCase("nodeA") && m.get("port").asText().equals("3333")) hasA = true;
-            if (m.get("nodeId").asText().equalsIgnoreCase("nodeB") && m.get("port").asText().equals("3333")) hasB = true;
+            if (m.get("nodeId").asText().equalsIgnoreCase("nodeA") && m.get("port").asText().equals("3333"))
+                hasA = true;
+            if (m.get("nodeId").asText().equalsIgnoreCase("nodeB") && m.get("port").asText().equals("3333"))
+                hasB = true;
         }
 
         if (!hasA || !hasB) throw new RuntimeException("Batch mapping failed to store both nodes");
@@ -261,7 +263,8 @@ public class IntegrationTest {
     private static void cleanup() {
         try {
             execAdmin("del", "test_key", "test_alias", "single_real", "multi_real", "single_alias", "batch_k1", "batch_k2", "map_key");
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     private static JsonNode execAdmin(String cmd, String... args) throws Exception {
