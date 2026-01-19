@@ -1,8 +1,6 @@
 package neoproxy.neokeymanager;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -20,6 +18,7 @@ public class SessionManager {
     });
 
     private SessionManager() {
+        // 后台清理线程：每3秒运行一次，负责清理所有僵尸连接
         monitor.scheduleAtFixedRate(this::checkZombies, 3, 3, TimeUnit.SECONDS);
     }
 
@@ -33,6 +32,7 @@ public class SessionManager {
 
     /**
      * 智能端口获取：在资源池范围内寻找一个当前全球未被占用的端口
+     * 优化：倒排索引逻辑，避免嵌套循环
      */
     public String findFirstFreePort(String realKeyName, String portRange) {
         if (portRange == null) return null;
@@ -42,9 +42,25 @@ public class SessionManager {
         int start = Integer.parseInt(parts[0]);
         int end = Integer.parseInt(parts[1]);
 
+        Set<String> busyPorts = new HashSet<>();
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+
+        if (nodeMap != null) {
+            long now = System.currentTimeMillis();
+            for (NodeSession s : nodeMap.values()) {
+                for (Map.Entry<String, Long> entry : s.activePorts.entrySet()) {
+                    if (now - entry.getValue() < Protocol.ZOMBIE_TIMEOUT_MS) {
+                        busyPorts.add(entry.getKey());
+                    }
+                }
+            }
+        }
+
         for (int p = start; p <= end; p++) {
             String portStr = String.valueOf(p);
-            if (!isPortGlobalActive(realKeyName, portStr)) return portStr;
+            if (!busyPorts.contains(portStr)) {
+                return portStr;
+            }
         }
         return null;
     }
@@ -68,7 +84,9 @@ public class SessionManager {
         String sessionKey = getSessionKey(nodeId, displayKeyName);
 
         synchronized (nodeMap) {
-            checkZombiesForKey(realKeyName, nodeMap);
+            // [CRITICAL FIX] 移除 checkZombiesForKey。
+            // 不要在此处进行全量遍历清理，这会导致极高的 CPU 占用和锁竞争。
+            // 依赖后台线程进行清理即可。
 
             if (isAliasSingle && isAliasActiveGlobally(nodeMap, displayKeyName, sessionKey)) {
                 ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, nodeId);
@@ -98,7 +116,7 @@ public class SessionManager {
     }
 
     /**
-     * 核心：心跳维持 (修复了参数对不上的问题)
+     * 核心：心跳维持
      */
     public boolean keepAlive(String realKeyName, String incomingSerial, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
         String sessionKey = getSessionKey(nodeId, incomingSerial);
@@ -108,13 +126,14 @@ public class SessionManager {
 
         NodeSession session = nodeMap.get(sessionKey);
         if (session != null) {
+            // Fast Path: 端口已存在且活跃，直接更新时间戳，无需加锁
             if (session.containsPort(port)) {
                 session.refreshPort(port);
                 return true;
             }
+            // Slow Path: 新端口或状态变更，需要加锁检查 Limit
             synchronized (nodeMap) {
-                checkZombiesForKey(realKeyName, nodeMap);
-                // 修复：这里之前传了 6 个参数，导致编译报错，现在改为正确的 5 个
+                // [CRITICAL FIX] 移除 checkZombiesForKey。绝不要在心跳路径中做全量清理。
                 if (!canAcceptMorePorts(nodeMap, session, port, maxConnections, isAliasSingle)) return false;
                 session.refreshPort(port);
                 return true;
@@ -143,7 +162,6 @@ public class SessionManager {
         return false;
     }
 
-    // 辅助方法：参数为 5 个
     private boolean canAcceptMorePorts(Map<String, NodeSession> nodeMap, NodeSession session, String port, int maxConnections, boolean isAliasS) {
         if (session.containsPort(port)) return true;
         if (!"INIT".equals(port) && session.containsPort("INIT")) return true;
@@ -246,7 +264,13 @@ public class SessionManager {
 
         synchronized int getLivePortCount() {
             long now = System.currentTimeMillis();
-            return (int) activePorts.values().stream().filter(t -> (now - t) < Protocol.ZOMBIE_TIMEOUT_MS).count();
+            int count = 0;
+            for (Long timestamp : activePorts.values()) {
+                if (now - timestamp < Protocol.ZOMBIE_TIMEOUT_MS) {
+                    count++;
+                }
+            }
+            return count;
         }
 
         boolean hasLogged(String p) {
