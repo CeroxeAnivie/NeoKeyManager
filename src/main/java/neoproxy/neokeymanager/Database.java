@@ -16,9 +16,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class Database {
-    private static final String DB_DRIVER = "org.h2.Driver";
-    private static final String DB_USER = "sa";
-    private static final String DB_PASSWORD = "";
+    // [CONFIG] 切换为 SQLite 驱动
+    private static final String DB_DRIVER = "org.sqlite.JDBC";
+    private static final String DB_USER = "";     // SQLite 不需要
+    private static final String DB_PASSWORD = ""; // SQLite 不需要
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy/M/d-HH:mm");
 
     private static final String STATUS_ENABLED = "ENABLED";
@@ -31,18 +32,18 @@ public class Database {
     private static final String ANSI_YELLOW = "\u001B[33m";
     private static final String ANSI_BLUE = "\u001B[34m";
 
-    // [读缓存] TTL 3000ms，拦截绝大多数心跳读请求
+    // [应用层缓存] 保持原有逻辑，减少 DB 读压力
     private static final ConcurrentHashMap<String, CachedState> stateCache = new ConcurrentHashMap<>();
     private static final long CACHE_TTL_MS = 3000L;
 
-    // [写缓冲] 流量扣费缓冲区，防止高IO
+    // [应用层缓冲] 保持原有逻辑，流量扣费内存聚合，极大降低 IO
     private static final ConcurrentHashMap<String, Double> trafficBuffer = new ConcurrentHashMap<>();
 
-    // [连接保持] 持有一个连接以保持 H2 引擎常驻，避免反复冷启动
+    // [性能优化] 保持一个连接以维持 WAL 共享内存映射 (Shared-Memory)，减少系统调用开销
     private static Connection keepAliveConn;
 
     private static String getDbUrl() {
-        return "jdbc:h2:" + Config.DB_PATH + ";DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000;DEFAULT_LOCK_TIMEOUT=10000";
+        return "jdbc:sqlite:" + Config.DB_PATH;
     }
 
     public static void init() {
@@ -50,10 +51,26 @@ public class Database {
             ServerLogger.infoWithSource("Database", "nkm.db.loadingDriver");
             Class.forName(DB_DRIVER);
 
-            // [CRITICAL FIX] 建立一个常驻连接，防止 H2 引擎反复关闭/重启造成的极高 CPU/IO
-            keepAliveConn = DriverManager.getConnection(getDbUrl(), DB_USER, DB_PASSWORD);
+            // [CRITICAL] 建立常驻连接，并进行 SQLite 核心性能调优
+            // 这里对应参考代码的 DatabaseContext 构造函数逻辑
+            keepAliveConn = DriverManager.getConnection(getDbUrl());
+            try (Statement stmt = keepAliveConn.createStatement()) {
+                // 1. 开启 WAL 模式：实现一写多读，消除锁竞争
+                stmt.execute("PRAGMA journal_mode = WAL;");
+                // 2. 同步模式 NORMAL：在断电保护和写入速度间取得最佳平衡
+                stmt.execute("PRAGMA synchronous = NORMAL;");
+                // 3. 忙碌等待：防止高并发下的 database is locked
+                stmt.execute("PRAGMA busy_timeout = 5000;");
+                // 4. 临时文件存内存：进一步减少 IO
+                stmt.execute("PRAGMA temp_store = MEMORY;");
+                // 5. 强制开启外键 (虽然 getConnection 会做，但 init 也需要)
+                stmt.execute("PRAGMA foreign_keys = ON;");
+            }
 
             try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+                // [SCHEMA] 初始化表结构
+                // SQLite 兼容性处理：使用 0/1 代替 FALSE/TRUE 以确保最大兼容性
+
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS keys (
                                 name VARCHAR(50) PRIMARY KEY,
@@ -63,13 +80,16 @@ public class Database {
                                 default_port VARCHAR(50) NOT NULL,
                                 max_conns INT NOT NULL DEFAULT 1,
                                 status VARCHAR(20) DEFAULT 'ENABLED', 
-                                enable_web BOOLEAN DEFAULT FALSE,
-                                is_single BOOLEAN DEFAULT FALSE
+                                enable_web BOOLEAN DEFAULT 0,
+                                is_single BOOLEAN DEFAULT 0,
+                                custom_blocking_msg VARCHAR(255) DEFAULT NULL
                             )
                         """);
+
+                // [DIALECT] SQLite 自增主键的特殊写法: INTEGER PRIMARY KEY AUTOINCREMENT
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS node_ports (
-                                id INT AUTO_INCREMENT PRIMARY KEY,
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
                                 key_name VARCHAR(50),
                                 node_id VARCHAR(50),
                                 port VARCHAR(50),
@@ -77,39 +97,30 @@ public class Database {
                                 UNIQUE(key_name, node_id)
                             )
                         """);
+
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS key_aliases (
                                 alias_name VARCHAR(50) PRIMARY KEY,
                                 target_name VARCHAR(50) NOT NULL,
-                                is_single BOOLEAN DEFAULT FALSE,
+                                is_single BOOLEAN DEFAULT 0,
                                 FOREIGN KEY (target_name) REFERENCES keys(name) ON DELETE CASCADE
                             )
                         """);
 
                 migrateLegacySchema(conn);
 
-                // Add columns safely
-                try {
-                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS max_conns INT DEFAULT 1");
-                } catch (SQLException ignored) {
-                }
-                try {
-                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS enable_web BOOLEAN DEFAULT FALSE");
-                } catch (SQLException ignored) {
-                }
-                try {
-                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS is_single BOOLEAN DEFAULT FALSE");
-                } catch (SQLException ignored) {
-                }
-                try {
-                    stmt.execute("ALTER TABLE key_aliases ADD COLUMN IF NOT EXISTS is_single BOOLEAN DEFAULT FALSE");
-                } catch (SQLException ignored) {
-                }
+                // [SCHEMA PATCH] 热更新：无损添加字段
+                // 采用 try-catch 忽略错误的方式，这是最稳健的跨版本兼容写法
+                safeAddColumn(stmt, "keys", "max_conns", "INT DEFAULT 1");
+                safeAddColumn(stmt, "keys", "enable_web", "BOOLEAN DEFAULT 0");
+                safeAddColumn(stmt, "keys", "is_single", "BOOLEAN DEFAULT 0");
+                safeAddColumn(stmt, "keys", "custom_blocking_msg", "VARCHAR(255) DEFAULT NULL");
+                safeAddColumn(stmt, "key_aliases", "is_single", "BOOLEAN DEFAULT 0");
 
-                ServerLogger.infoWithSource("Database", "nkm.db.schemaInit");
+                ServerLogger.infoWithSource("Database", "nkm.db.schemaInit", "Engine: SQLite WAL");
             }
 
-            // [IO FIX] 启动定时任务，每5秒将缓冲区流量写入数据库
+            // [IO BUFFER] 启动定时刷库任务
             Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "NKM-DB-Flusher");
                 t.setDaemon(true);
@@ -118,22 +129,46 @@ public class Database {
 
         } catch (Exception e) {
             e.printStackTrace();
+            System.err.println("Database Init Failed. Missing sqlite-jdbc driver?");
             System.exit(1);
         }
     }
 
+    /**
+     * [工具] 安全添加列，忽略已存在的错误
+     */
+    private static void safeAddColumn(Statement stmt, String table, String col, String definition) {
+        try {
+            stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + col + " " + definition);
+        } catch (SQLException e) {
+            // 忽略 Duplicate column name 错误
+        }
+    }
+
     private static void migrateLegacySchema(Connection conn) {
+        // 简化的迁移逻辑，利用 SQLite 的宽容性
         try (Statement stmt = conn.createStatement()) {
-            ResultSet rs = conn.getMetaData().getColumns(null, null, "KEYS", "IS_ENABLE");
-            if (rs.next()) {
+            boolean hasOldCol = false;
+            try {
+                stmt.executeQuery("SELECT is_enable FROM keys LIMIT 1");
+                hasOldCol = true;
+            } catch (SQLException ignored) {
+            }
+
+            if (hasOldCol) {
                 ServerLogger.warnWithSource("Database", "nkm.db.migrating", "Upgrading: is_enable -> status");
+                safeAddColumn(stmt, "keys", "status", "VARCHAR(20) DEFAULT 'ENABLED'");
+
+                stmt.executeUpdate("UPDATE keys SET status = '" + STATUS_DISABLED + "' WHERE is_enable = 0");
+                stmt.executeUpdate("UPDATE keys SET status = '" + STATUS_ENABLED + "' WHERE is_enable = 1");
+
+                // SQLite 新版支持 DROP COLUMN，但在旧版可能会失败。
+                // 工业级实践：只做数据迁移，不强求物理删除旧列，避免表重写带来的风险。
                 try {
-                    stmt.execute("ALTER TABLE keys ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ENABLED'");
+                    stmt.execute("ALTER TABLE keys DROP COLUMN is_enable");
                 } catch (SQLException ignored) {
+                    ServerLogger.warnWithSource("Database", "nkm.db.migration", "Old column retained (Legacy SQLite)");
                 }
-                stmt.executeUpdate("UPDATE keys SET status = '" + STATUS_DISABLED + "' WHERE is_enable = FALSE");
-                stmt.executeUpdate("UPDATE keys SET status = '" + STATUS_ENABLED + "' WHERE is_enable = TRUE");
-                stmt.execute("ALTER TABLE keys DROP COLUMN is_enable");
                 ServerLogger.infoWithSource("Database", "nkm.db.migrated");
             }
         } catch (SQLException e) {
@@ -142,13 +177,66 @@ public class Database {
     }
 
     private static Connection getConnection() throws SQLException {
-        // 由于 keepAliveConn 的存在，这里创建连接非常快
-        return DriverManager.getConnection(getDbUrl(), DB_USER, DB_PASSWORD);
+        Connection conn = DriverManager.getConnection(getDbUrl());
+        // [CRITICAL] 对应参考代码：SQLite 每次建立连接都要手动开启外键约束，它不持久化
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("PRAGMA foreign_keys = ON;");
+        }
+        return conn;
     }
 
-    /**
-     * [IO FIX] 批量扣费入口：不再直接写库，而是写入内存 Buffer
-     */
+    // ==================== 以下业务逻辑保持原样，仅做 SQL 微调 ====================
+
+    public static boolean setCustomBlockingMsg(String realName, String msg) {
+        String sql = "UPDATE keys SET custom_blocking_msg = ? WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, msg);
+            stmt.setString(2, realName);
+            return stmt.executeUpdate() > 0;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    public static String getCustomBlockingMsg(String realName) {
+        String sql = "SELECT custom_blocking_msg FROM keys WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, realName);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return rs.getString("custom_blocking_msg");
+            }
+        } catch (SQLException ignored) {
+        }
+        return null;
+    }
+
+    public static Map<String, String> getAllCustomBlockingMsgs() {
+        Map<String, String> result = new HashMap<>();
+        String sql = "SELECT name, custom_blocking_msg FROM keys WHERE custom_blocking_msg IS NOT NULL";
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                String msg = rs.getString("custom_blocking_msg");
+                if (msg != null && !msg.isEmpty()) {
+                    result.put(rs.getString("name"), msg);
+                }
+            }
+        } catch (SQLException ignored) {
+        }
+        return result;
+    }
+
+    public static boolean isNodeMappedAnywhere(String nodeId) {
+        String sql = "SELECT 1 FROM node_ports WHERE LOWER(node_id) = LOWER(?) LIMIT 1";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, nodeId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
     public static void deductBalanceBatch(Map<String, Double> trafficMap) {
         if (trafficMap == null || trafficMap.isEmpty()) return;
         trafficMap.forEach((key, val) ->
@@ -158,14 +246,10 @@ public class Database {
 
     // ==================== Traffic Buffer Logic ====================
 
-    /**
-     * [IO FIX] 真实的写库操作，由后台线程周期性调用
-     */
     private static void flushTrafficBuffer() {
         if (trafficBuffer.isEmpty()) return;
 
         Map<String, Double> snapshot = new HashMap<>();
-        // 移动数据到快照，清空缓冲区，减少锁占用
         trafficBuffer.forEach((k, v) -> {
             snapshot.put(k, v);
             trafficBuffer.remove(k);
@@ -195,13 +279,12 @@ public class Database {
             }
             conn.commit();
 
-            // 余额变动后，强制废弃缓存
             for (String key : snapshot.keySet()) {
                 stateCache.remove(key);
             }
         } catch (SQLException e) {
             ServerLogger.error("Database", "nkm.db.deductFail", e);
-            // 如果写库失败，尝试将流量加回缓冲区，避免丢失（简单重试机制）
+            // 回滚逻辑：写库失败，将流量加回缓冲区
             snapshot.forEach((k, v) -> trafficBuffer.merge(k, v, Double::sum));
         }
     }
@@ -247,8 +330,6 @@ public class Database {
             return null;
         }
     }
-
-    // ==================== Existing Methods (Optimized) ====================
 
     public static boolean setKeyStatusStrict(String name, boolean enable) {
         String realName = getRealKeyName(name);
@@ -378,7 +459,8 @@ public class Database {
     }
 
     public static boolean renameKey(String oldName, String newName) {
-        String copyKeySql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single) SELECT ?, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single FROM keys WHERE name = ?";
+        // [COMPATIBILITY] SQLite 支持 INSERT INTO ... SELECT
+        String copyKeySql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single, custom_blocking_msg) SELECT ?, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single, custom_blocking_msg FROM keys WHERE name = ?";
         String updatePortsSql = "UPDATE node_ports SET key_name = ? WHERE key_name = ?";
         String updateAliasesSql = "UPDATE key_aliases SET target_name = ? WHERE target_name = ?";
         String delOldKeySql = "DELETE FROM keys WHERE name = ?";
@@ -396,14 +478,18 @@ public class Database {
                 stmtCopy.setString(1, newName);
                 stmtCopy.setString(2, oldName);
                 if (stmtCopy.executeUpdate() == 0) throw new SQLException("Failed to copy key");
+
                 stmtPorts.setString(1, newName);
                 stmtPorts.setString(2, oldName);
                 stmtPorts.executeUpdate();
+
                 stmtAliases.setString(1, newName);
                 stmtAliases.setString(2, oldName);
                 stmtAliases.executeUpdate();
+
                 stmtDel.setString(1, oldName);
                 stmtDel.executeUpdate();
+
                 conn.commit();
                 return true;
             } catch (SQLException e) {
@@ -417,8 +503,6 @@ public class Database {
             return false;
         }
     }
-
-    // ... Other CRUD methods (renameKey, deleteKey, etc.) need minimal changes, just cache clearing ...
 
     public static void deleteKey(String realName) {
         stateCache.remove(realName);
@@ -444,8 +528,6 @@ public class Database {
         return null;
     }
 
-    // Queries below this line are mostly reads, fine to keep as is (they use getConnection which is now fast)
-
     public static boolean isAlias(String name) {
         String sql = "SELECT 1 FROM key_aliases WHERE alias_name = ?";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -459,7 +541,7 @@ public class Database {
     }
 
     public static void addLink(String alias, String target) {
-        String sql = "INSERT INTO key_aliases (alias_name, target_name, is_single) VALUES (?, ?, FALSE)";
+        String sql = "INSERT INTO key_aliases (alias_name, target_name, is_single) VALUES (?, ?, 0)";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, alias);
             stmt.setString(2, target);
@@ -541,10 +623,11 @@ public class Database {
     public static List<String> getSingleKeys() {
         List<String> list = new ArrayList<>();
         try (Connection conn = getConnection()) {
-            try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT name FROM keys WHERE is_single = TRUE")) {
+            // SQLite boolean maps to 1 for TRUE
+            try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT name FROM keys WHERE is_single = 1")) {
                 while (rs.next()) list.add(rs.getString("name") + " (RealKey)");
             }
-            try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT alias_name, target_name FROM key_aliases WHERE is_single = TRUE")) {
+            try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT alias_name, target_name FROM key_aliases WHERE is_single = 1")) {
                 while (rs.next())
                     list.add(rs.getString("alias_name") + " (Alias -> " + rs.getString("target_name") + ")");
             }
@@ -672,7 +755,7 @@ public class Database {
     }
 
     public static boolean addKey(String name, double balance, double rate, String expireTime, String port, int maxConns) {
-        String sql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single) VALUES (?, ?, ?, ?, ?, ?, 'ENABLED', FALSE, FALSE)";
+        String sql = "INSERT INTO keys (name, balance, rate, expire_time, default_port, max_conns, status, enable_web, is_single) VALUES (?, ?, ?, ?, ?, ?, 'ENABLED', 0, 0)";
         try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
             stmt.setString(1, name);
             stmt.setDouble(2, balance);
@@ -685,17 +768,6 @@ public class Database {
         } catch (SQLException e) {
             return false;
         }
-    }
-
-    public static int getKeyMaxConns(String realName) {
-        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement("SELECT max_conns FROM keys WHERE name = ?")) {
-            stmt.setString(1, realName);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) return rs.getInt("max_conns");
-            }
-        } catch (SQLException ignored) {
-        }
-        return -1;
     }
 
     public static Map<String, Object> getKeyInfoFull(String realName, String nodeId) {
@@ -833,6 +905,18 @@ public class Database {
         } catch (SQLException e) {
         }
         return null;
+    }
+
+    public static int getKeyMaxConns(String realName) {
+        String sql = "SELECT max_conns FROM keys WHERE name = ?";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, realName);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) return rs.getInt("max_conns");
+            }
+        } catch (SQLException ignored) {
+        }
+        return 1; // 默认返回 1
     }
 
     private record CachedState(KeyStateResult result, long expireTime) {

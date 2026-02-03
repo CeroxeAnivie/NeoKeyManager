@@ -4,7 +4,6 @@ import java.io.Serializable;
 
 /**
  * 数据传输对象与状态枚举
- * 职责：定义标准化的数据结构，解耦业务逻辑与底层实现
  */
 public class DTOs {
 
@@ -20,8 +19,12 @@ public class DTOs {
     public record ApiError(
             String error,   // 错误类型
             String reason,  // 具体原因 (显示给 NPS 日志)
-            KeyStatus status // 当前状态
+            KeyStatus status, // 当前状态
+            String customBlockingMessage
     ) implements Serializable {
+        public ApiError(String error, String reason, KeyStatus status) {
+            this(error, reason, status, null);
+        }
     }
 
     /**
@@ -32,10 +35,19 @@ public class DTOs {
             double balance,
             double rate,
             String expireTime,
-            boolean isEnable,       // 兼容旧版逻辑: status == ENABLED
+            boolean isEnable,
             boolean enableWebHTML,
             String port,
             int max_conns
+    ) implements Serializable {
+    }
+
+    /**
+     * [新增] 更新 URL 响应结构
+     */
+    public record UpdateUrlResponse(
+            String url,
+            boolean valid
     ) implements Serializable {
     }
 

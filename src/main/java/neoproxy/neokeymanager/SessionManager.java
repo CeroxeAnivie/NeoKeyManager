@@ -18,7 +18,6 @@ public class SessionManager {
     });
 
     private SessionManager() {
-        // 后台清理线程：每3秒运行一次，负责清理所有僵尸连接
         monitor.scheduleAtFixedRate(this::checkZombies, 3, 3, TimeUnit.SECONDS);
     }
 
@@ -31,63 +30,120 @@ public class SessionManager {
     }
 
     /**
-     * 智能端口获取：在资源池范围内寻找一个当前全球未被占用的端口
-     * 优化：倒排索引逻辑，避免嵌套循环
+     * [最终修复] 智能端口获取 (节点隔离版)
+     * 逻辑：端口占用检查仅限于 requestingNodeId 内部。
+     * 不同节点的相同端口互不干扰。
      */
-    public String findFirstFreePort(String realKeyName, String portRange) {
+    public String findFirstFreePort(String realKeyName, String portRange, String requestingNodeId) {
         if (portRange == null) return null;
-        if (!portRange.contains("-")) return isPortGlobalActive(realKeyName, portRange) ? null : portRange;
 
+        // ==================== 1. 静态端口 (Static) ====================
+        // 规则：在该节点上，抢占模式。允许自己重用，拒绝别人。
+        if (!portRange.contains("-")) {
+            // 检查该节点上，是否被【其他 Key】占用了
+            if (isPortOccupiedByOthersOnNode(requestingNodeId, portRange, realKeyName)) {
+                return null; // 被别人占了
+            }
+            return portRange; // 没人占，或者是我自己占的 -> 允许
+        }
+
+        // ==================== 2. 动态端口 (Dynamic) ====================
+        // 规则：在该节点上，必须分配绝对空闲的端口。
+        // 即使是我自己占用了 58000，为了防止端口冲突，也必须分配 58001。
         String[] parts = portRange.split("-");
         int start = Integer.parseInt(parts[0]);
         int end = Integer.parseInt(parts[1]);
 
-        Set<String> busyPorts = new HashSet<>();
-        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+        // 获取【该节点】上所有忙碌的端口 (包括我自己占用的)
+        Set<String> nodeBusyPorts = getPortsBusyOnNode(requestingNodeId);
 
-        if (nodeMap != null) {
-            long now = System.currentTimeMillis();
-            for (NodeSession s : nodeMap.values()) {
-                for (Map.Entry<String, Long> entry : s.activePorts.entrySet()) {
-                    if (now - entry.getValue() < Protocol.ZOMBIE_TIMEOUT_MS) {
-                        busyPorts.add(entry.getKey());
+        for (int p = start; p <= end; p++) {
+            String portStr = String.valueOf(p);
+            // 只要在该节点上没被用，就可以分配
+            if (!nodeBusyPorts.contains(portStr)) {
+                return portStr;
+            }
+        }
+
+        // 该节点所有端口都满了
+        return null;
+    }
+
+    /**
+     * 辅助：获取特定 NodeID 上所有活跃的端口 (无论属于哪个 Key)
+     */
+    private Set<String> getPortsBusyOnNode(String targetNodeId) {
+        Set<String> busy = new HashSet<>();
+        long now = System.currentTimeMillis();
+        String targetLower = targetNodeId.toLowerCase();
+
+        // 遍历所有 Key
+        sessions.values().forEach(nodeMap -> {
+            // 遍历该 Key 下的所有 Session
+            nodeMap.forEach((sessionKey, session) -> {
+                String ownerNodeId = sessionKey.split("\\|")[0];
+                // 只关心目标节点的 Session
+                if (ownerNodeId.equalsIgnoreCase(targetLower)) {
+                    for (Map.Entry<String, Long> entry : session.activePorts.entrySet()) {
+                        if (now - entry.getValue() < Protocol.ZOMBIE_TIMEOUT_MS) {
+                            busy.add(entry.getKey());
+                        }
+                    }
+                }
+            });
+        });
+        return busy;
+    }
+
+    /**
+     * 辅助：检查特定 NodeID 上，端口是否被【其他 Key】占用
+     */
+    private boolean isPortOccupiedByOthersOnNode(String targetNodeId, String port, String myRealKeyName) {
+        long now = System.currentTimeMillis();
+        String targetLower = targetNodeId.toLowerCase();
+
+        for (Map.Entry<String, ConcurrentHashMap<String, NodeSession>> keyEntry : sessions.entrySet()) {
+            String otherKeyName = keyEntry.getKey();
+
+            // 如果是同一个 Key (自己)，跳过检查 -> 允许重连
+            if (otherKeyName.equals(myRealKeyName)) continue;
+
+            ConcurrentHashMap<String, NodeSession> nodeMap = keyEntry.getValue();
+            for (Map.Entry<String, NodeSession> sEntry : nodeMap.entrySet()) {
+                String sessionKey = sEntry.getKey();
+                String ownerNodeId = sessionKey.split("\\|")[0];
+
+                // 只有当是同一个节点时，才存在端口冲突
+                if (ownerNodeId.equalsIgnoreCase(targetLower)) {
+                    NodeSession s = sEntry.getValue();
+                    Long lastBeat = s.activePorts.get(port);
+                    // 发现被别人占用且活跃
+                    if (lastBeat != null && (now - lastBeat < Protocol.ZOMBIE_TIMEOUT_MS)) {
+                        return true;
                     }
                 }
             }
         }
-
-        for (int p = start; p <= end; p++) {
-            String portStr = String.valueOf(p);
-            if (!busyPorts.contains(portStr)) {
-                return portStr;
-            }
-        }
-        return null;
-    }
-
-    private boolean isPortGlobalActive(String realKeyName, String port) {
-        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
-        if (nodeMap == null) return false;
-        long now = System.currentTimeMillis();
-        for (NodeSession s : nodeMap.values()) {
-            Long lastBeat = s.activePorts.get(port);
-            if (lastBeat != null && (now - lastBeat < Protocol.ZOMBIE_TIMEOUT_MS)) return true;
-        }
         return false;
     }
 
-    /**
-     * 核心：注册会话
-     */
+    // ... tryRegisterSession, keepAlive (保持鉴权和 connectionDetail 逻辑) ...
+
     public boolean tryRegisterSession(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
+        if (NodeAuthManager.getInstance().authenticateAndGetAlias(nodeId) == null) return false;
+        return tryRegisterSessionInternal(realKeyName, displayKeyName, nodeId, port, maxConnections, isAliasSingle, null);
+    }
+
+    public boolean tryRegisterSession(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle, String connectionDetail) {
+        if (NodeAuthManager.getInstance().authenticateAndGetAlias(nodeId) == null) return false;
+        return tryRegisterSessionInternal(realKeyName, displayKeyName, nodeId, port, maxConnections, isAliasSingle, connectionDetail);
+    }
+
+    private boolean tryRegisterSessionInternal(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle, String connectionDetail) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.computeIfAbsent(realKeyName, k -> new ConcurrentHashMap<>());
         String sessionKey = getSessionKey(nodeId, displayKeyName);
 
         synchronized (nodeMap) {
-            // [CRITICAL FIX] 移除 checkZombiesForKey。
-            // 不要在此处进行全量遍历清理，这会导致极高的 CPU 占用和锁竞争。
-            // 依赖后台线程进行清理即可。
-
             if (isAliasSingle && isAliasActiveGlobally(nodeMap, displayKeyName, sessionKey)) {
                 ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, nodeId);
                 return false;
@@ -101,49 +157,63 @@ public class SessionManager {
             NodeSession session = nodeMap.get(sessionKey);
             if (session != null) {
                 if (!canAcceptMorePorts(nodeMap, session, port, maxConnections, isAliasSingle)) return false;
-                session.refreshPort(port);
+                session.refreshPort(port, connectionDetail);
                 return true;
             }
 
             if (countTotalPorts(nodeMap) >= maxConnections) return false;
 
             session = new NodeSession(displayKeyName);
-            session.refreshPort(port);
+            session.refreshPort(port, connectionDetail);
             nodeMap.put(sessionKey, session);
             logConnection(displayKeyName, nodeId, port, session);
             return true;
         }
     }
 
-    /**
-     * 核心：心跳维持
-     */
     public boolean keepAlive(String realKeyName, String incomingSerial, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
+        return keepAlive(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle, null);
+    }
+
+    public boolean keepAlive(String realKeyName, String incomingSerial, String nodeId, String port, int maxConnections, boolean isAliasSingle, String connectionDetail) {
+        if (NodeAuthManager.getInstance().authenticateAndGetAlias(nodeId) == null) return false;
+
         String sessionKey = getSessionKey(nodeId, incomingSerial);
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap == null)
-            return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle);
+            return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle, connectionDetail);
 
         NodeSession session = nodeMap.get(sessionKey);
         if (session != null) {
-            // Fast Path: 端口已存在且活跃，直接更新时间戳，无需加锁
             if (session.containsPort(port)) {
-                session.refreshPort(port);
+                session.refreshPort(port, connectionDetail);
                 return true;
             }
-            // Slow Path: 新端口或状态变更，需要加锁检查 Limit
             synchronized (nodeMap) {
-                // [CRITICAL FIX] 移除 checkZombiesForKey。绝不要在心跳路径中做全量清理。
                 if (!canAcceptMorePorts(nodeMap, session, port, maxConnections, isAliasSingle)) return false;
-                session.refreshPort(port);
+                session.refreshPort(port, connectionDetail);
                 return true;
             }
         }
-        return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle);
+        return tryRegisterSession(realKeyName, incomingSerial, nodeId, port, maxConnections, isAliasSingle, connectionDetail);
     }
 
     public boolean isSpecificPortActive(String realKeyName, String nodeId, String port) {
-        return isPortGlobalActive(realKeyName, port);
+        // 这里的查询逻辑也应改为 Node-Specific，但目前似乎未被深度使用，暂且保持安全
+        // 为了严谨，建议改为：
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+        if (nodeMap == null) return false;
+        NodeSession s = nodeMap.get(getSessionKey(nodeId, realKeyName)); // 假设 displayKey=realKeyName, 简化
+        // 如果要做精确查询，需要遍历 nodeMap 找匹配 nodeId 的 session
+        long now = System.currentTimeMillis();
+        String targetLower = nodeId.toLowerCase();
+        for (Map.Entry<String, NodeSession> entry : nodeMap.entrySet()) {
+            if (entry.getKey().startsWith(targetLower + "|")) {
+                Long t = entry.getValue().activePorts.get(port);
+                if (t != null && now - t < Protocol.ZOMBIE_TIMEOUT_MS) return true;
+            }
+        }
+        return false;
     }
 
     private boolean isAliasActiveGlobally(Map<String, NodeSession> nodeMap, String alias, String currentSessionKey) {
@@ -180,18 +250,25 @@ public class SessionManager {
         return sum;
     }
 
+    public void releaseSession(String realKeyName, String nodeId, String displayKey) {
+        ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
+        if (nodeMap != null) {
+            String targetSessionKey = getSessionKey(nodeId, displayKey);
+            synchronized (nodeMap) {
+                NodeSession removed = nodeMap.remove(targetSessionKey);
+                if (removed != null) {
+                    ServerLogger.infoWithSource("Session", "nkm.session.released", displayKey, nodeId);
+                }
+                if (nodeMap.isEmpty()) sessions.remove(realKeyName);
+            }
+        }
+    }
+
     public void releaseSession(String realKeyName, String nodeId) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap != null) {
             synchronized (nodeMap) {
-                Iterator<Map.Entry<String, NodeSession>> it = nodeMap.entrySet().iterator();
-                while (it.hasNext()) {
-                    Map.Entry<String, NodeSession> entry = it.next();
-                    if (entry.getKey().startsWith(nodeId + "|")) {
-                        ServerLogger.infoWithSource("Session", "nkm.session.released", entry.getValue().displayKey, nodeId);
-                        it.remove();
-                    }
-                }
+                nodeMap.entrySet().removeIf(e -> e.getKey().startsWith(nodeId + "|"));
                 if (nodeMap.isEmpty()) sessions.remove(realKeyName);
             }
         }
@@ -246,6 +323,7 @@ public class SessionManager {
 
     private static class NodeSession {
         final ConcurrentHashMap<String, Long> activePorts = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<String, String> portDetails = new ConcurrentHashMap<>();
         final java.util.Set<String> loggedPorts = ConcurrentHashMap.newKeySet();
         final String displayKey;
 
@@ -257,18 +335,26 @@ public class SessionManager {
             return activePorts.containsKey(p);
         }
 
-        synchronized void refreshPort(String p) {
+        synchronized void refreshPort(String p, String detail) {
             activePorts.put(p, System.currentTimeMillis());
             if (!"INIT".equals(p)) activePorts.remove("INIT");
+
+            if (detail != null && !detail.isEmpty() && !detail.equals("None")) {
+                portDetails.put(p, detail);
+            } else {
+                portDetails.remove(p);
+            }
+        }
+
+        synchronized void refreshPort(String p) {
+            refreshPort(p, null);
         }
 
         synchronized int getLivePortCount() {
             long now = System.currentTimeMillis();
             int count = 0;
             for (Long timestamp : activePorts.values()) {
-                if (now - timestamp < Protocol.ZOMBIE_TIMEOUT_MS) {
-                    count++;
-                }
+                if (now - timestamp < Protocol.ZOMBIE_TIMEOUT_MS) count++;
             }
             return count;
         }
@@ -282,7 +368,12 @@ public class SessionManager {
         }
 
         synchronized String getFormattedPorts() {
-            return activePorts.keySet().stream().sorted().map(p -> p.equals("INIT") ? "..." : p).collect(Collectors.joining(" "));
+            return activePorts.keySet().stream().sorted().map(p -> {
+                if (p.equals("INIT")) return "(Handshaking)";
+                String detail = portDetails.get(p);
+                if (detail != null) return p + detail;
+                return p;
+            }).collect(Collectors.joining("  "));
         }
     }
 }

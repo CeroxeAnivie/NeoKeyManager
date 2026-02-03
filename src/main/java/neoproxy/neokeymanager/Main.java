@@ -68,8 +68,17 @@ public class Main {
             } catch (InterruptedException ignored) {
             }
             ServerLogger.infoWithSource("System", "nkm.info.reloading");
+
+            // 1. 重载配置文件
             Config.load();
+
+            // [新增] 2. 重载节点鉴权白名单 (NodeAuth.json)
+            NodeAuthManager.getInstance().load();
+
+            // 3. 重启 Web 服务
             startWebServer();
+
+            ServerLogger.infoWithSource("System", "nkm.info.reloadComplete");
         }, "NKM-Reloader").start();
     }
 
@@ -127,7 +136,7 @@ public class Main {
 
     private static void stopWebServer() {
         if (httpServer != null) {
-            httpServer.stop(0);
+            httpServer.stop(1);
             httpServer = null;
         }
     }
@@ -164,6 +173,12 @@ public class Main {
                         yield null;
                     }
                     case "web" -> keyService.execWeb(subArgs);
+
+                    // [新增] CBM 命令
+                    case "setcbm" -> keyService.execSetCbm(subArgs);
+                    case "delcbm" -> keyService.execDelCbm(subArgs);
+                    case "listcbm" -> keyService.execListCbm(subArgs);
+
                     default -> {
                         ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
                         printKeyUsage();
@@ -208,6 +223,7 @@ public class Main {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
         myConsole.log("Usage", "key setsingle/delsingle/listsingle ... - Manage Single Mode");
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.cbm")); // 新增用法
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
     }
 
@@ -310,9 +326,12 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
-        int maxNameLen = 16, maxNodeLen = 8, maxPortLen = 6;
+
+        // [修改] 增加列宽适配别名
+        int maxNameLen = 16, maxNodeLen = 15, maxPortLen = 6;
         Map<String, String> displayNames = new java.util.HashMap<>();
         Map<String, String> occupancyMap = new java.util.HashMap<>();
+
         for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
             String displayKey = entry.getKey();
             String realKey = Database.getRealKeyName(displayKey);
@@ -324,8 +343,12 @@ public class Main {
             int maxConns = (dbInfo != null && dbInfo.containsKey("max_conns")) ? (int) dbInfo.get("max_conns") : 0;
             int currentConns = (realKey != null) ? sm.getActiveCount(realKey) : 0;
             occupancyMap.put(displayKey, currentConns + " / " + maxConns);
+
             for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
-                maxNodeLen = Math.max(maxNodeLen, nodeEntry.getKey().length());
+                // [修改] 转换为别名
+                String realNodeId = nodeEntry.getKey();
+                String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
+                maxNodeLen = Math.max(maxNodeLen, alias.length());
                 maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
             }
         }
@@ -340,7 +363,7 @@ public class Main {
         int totalWidth = 3 + maxNameLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
         String separator = "-".repeat(totalWidth);
         sb.append(separator).append("\n");
-        sb.append(String.format(headerFmt, "SESSION (Link->Real)", "OCCUPANCY", "NODE ID", "PORT")).append("\n");
+        sb.append(String.format(headerFmt, "SESSION (Link->Real)", "OCCUPANCY", "NODE", "PORT (DETAIL)")).append("\n");
         sb.append(separator).append("\n");
         for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
             String displayKey = entry.getKey();
@@ -349,13 +372,15 @@ public class Main {
             Map<String, String> nodes = entry.getValue();
             boolean isFirstNode = true;
             for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
-                String nodeId = nodeEntry.getKey();
-                String portString = nodeEntry.getValue();
+                String realNodeId = nodeEntry.getKey();
+                // [修改] 显示别名
+                String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
+                String portString = nodeEntry.getValue(); // 已包含详情
                 if (isFirstNode) {
-                    sb.append(String.format(rowFmtKey, showName, usage, nodeId, portString)).append("\n");
+                    sb.append(String.format(rowFmtKey, showName, usage, alias, portString)).append("\n");
                     isFirstNode = false;
                 } else {
-                    sb.append(String.format(rowFmtSub, "", "", nodeId, portString)).append("\n");
+                    sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                 }
             }
             sb.append(separator).append("\n");

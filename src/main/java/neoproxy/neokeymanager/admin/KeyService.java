@@ -7,6 +7,7 @@ import neoproxy.neokeymanager.Utils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.StringJoiner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -369,6 +370,80 @@ public class KeyService {
         links.forEach((k, v) -> sb.append(String.format("   %-15s -> %s%n", k, v)));
         return sb.toString();
     }
+
+    // ==================== [修改] CBM 命令逻辑 ====================
+    public String execSetCbm(List<String> args) {
+        // 至少需要 key 和一个被 {} 包裹的消息
+        if (args.size() < 2) throw new IllegalArgumentException(ServerLogger.getMessage("nkm.usage.cbm"));
+
+        String name = args.getFirst();
+        String realKey = Database.getRealKeyName(name);
+        if (realKey == null) throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.keyNotFound", name));
+
+        // 1. 解析大括号内容
+        // 将剩余参数还原为原始字符串（保留空格）
+        String rawArgs = String.join(" ", args.subList(1, args.size()));
+
+        int start = rawArgs.indexOf('{');
+        int end = rawArgs.lastIndexOf('}');
+
+        if (start == -1 || end == -1 || start >= end) {
+            throw new IllegalArgumentException("Format Error: Message must be enclosed in { }. Example: key setcbm key1 {System Maintenance}");
+        }
+
+        // 提取大括号内部的内容
+        String msg = rawArgs.substring(start + 1, end);
+
+        // 2. 写入 CBM 消息
+        if (!Database.setCustomBlockingMsg(realKey, msg)) {
+            throw new RuntimeException("Database error: Failed to save CBM.");
+        }
+
+        // 3. [核心要求] 自动禁用 Key 并踢人
+        // 逻辑等同于 key disable <key>
+        if (!Database.setKeyStatusStrict(realKey, false)) {
+            throw new RuntimeException("CBM saved, but failed to disable key automatically.");
+        }
+        // 强制踢出当前连接，确保下次连接时触发 CBM
+        SessionManager.getInstance().forceReleaseKey(realKey);
+
+        return ServerLogger.getMessage("nkm.cbm.set", realKey);
+    }
+
+    // ==================== [修复] 使用 nkm.cbm.notFound ====================
+    public String execDelCbm(List<String> args) {
+        if (args.size() != 1) throw new IllegalArgumentException(ServerLogger.getMessage("nkm.usage.cbm"));
+
+        String name = args.getFirst();
+        String realKey = Database.getRealKeyName(name);
+        if (realKey == null) throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.keyNotFound", name));
+
+        // 1. 先检查是否存在 CBM
+        String currentMsg = Database.getCustomBlockingMsg(realKey);
+        if (currentMsg == null) {
+            // [此处使用了 nkm.cbm.notFound]
+            throw new IllegalArgumentException(ServerLogger.getMessage("nkm.cbm.notFound", realKey));
+        }
+
+        // 2. 执行删除
+        if (Database.setCustomBlockingMsg(realKey, null)) {
+            return ServerLogger.getMessage("nkm.cbm.deleted", realKey);
+        } else {
+            throw new RuntimeException("Database error: Failed to delete CBM.");
+        }
+    }
+
+    public String execListCbm(List<String> args) {
+        Map<String, String> map = Database.getAllCustomBlockingMsgs();
+        if (map.isEmpty()) return "No Custom Blocking Messages found.";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(ServerLogger.getMessage("nkm.list.cbmHeader")).append("\n");
+        map.forEach((k, v) -> sb.append(String.format("   %-15s : %s%n", k, v)));
+        return sb.toString();
+    }
+
+    // ==================== Helpers ====================
 
     private String validateAndFormatPortInput(String portInput) {
         if (portInput == null || portInput.isBlank()) throw new IllegalArgumentException("Port cannot be empty");

@@ -11,10 +11,14 @@ import java.util.Properties;
 public class Config {
     public static int PORT = 8080;
     public static String AUTH_TOKEN = "default_token";
-    public static String ADMIN_TOKEN = "admin_secret"; // [新增] 管理员Token
+    public static String ADMIN_TOKEN = "admin_secret";
     public static String DB_PATH = "./neokey_db";
     public static String SSL_CRT_PATH = null;
     public static String SSL_KEY_PATH = null;
+
+    // [新增] 客户端更新 URL 配置
+    public static String CLIENT_UPDATE_URL_7Z = "";
+    public static String CLIENT_UPDATE_URL_JAR = "";
 
     public static void load() {
         File configFile = new File("server.properties");
@@ -39,12 +43,18 @@ public class Config {
             String t = props.getProperty("AUTH_TOKEN");
             if (t != null) AUTH_TOKEN = t.trim();
 
-            // [新增] 读取 ADMIN_TOKEN
             String at = props.getProperty("ADMIN_TOKEN");
             if (at != null) ADMIN_TOKEN = at.trim();
 
             String d = props.getProperty("DB_PATH");
             if (d != null) DB_PATH = d.trim();
+
+            // [新增] 读取更新 URL
+            String u7z = props.getProperty("CLIENT_UPDATE_URL_7Z");
+            if (u7z != null) CLIENT_UPDATE_URL_7Z = u7z.trim();
+
+            String uJar = props.getProperty("CLIENT_UPDATE_URL_JAR");
+            if (uJar != null) CLIENT_UPDATE_URL_JAR = uJar.trim();
 
             String crtPathRaw = props.getProperty("SSL_CRT_PATH");
             String keyPathRaw = props.getProperty("SSL_KEY_PATH");
