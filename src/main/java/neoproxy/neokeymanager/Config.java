@@ -16,9 +16,11 @@ public class Config {
     public static String SSL_CRT_PATH = null;
     public static String SSL_KEY_PATH = null;
 
-    // [新增] 客户端更新 URL 配置
     public static String CLIENT_UPDATE_URL_7Z = "";
     public static String CLIENT_UPDATE_URL_JAR = "";
+
+    // [新增] 默认主节点 ID (用于独占默认端口)
+    public static String DEFAULT_NODE = "";
 
     public static void load() {
         File configFile = new File("server.properties");
@@ -49,12 +51,15 @@ public class Config {
             String d = props.getProperty("DB_PATH");
             if (d != null) DB_PATH = d.trim();
 
-            // [新增] 读取更新 URL
             String u7z = props.getProperty("CLIENT_UPDATE_URL_7Z");
             if (u7z != null) CLIENT_UPDATE_URL_7Z = u7z.trim();
 
             String uJar = props.getProperty("CLIENT_UPDATE_URL_JAR");
             if (uJar != null) CLIENT_UPDATE_URL_JAR = uJar.trim();
+
+            // [新增] 读取 DEFAULT_NODE 配置
+            String dn = props.getProperty("DEFAULT_NODE");
+            if (dn != null) DEFAULT_NODE = dn.trim();
 
             String crtPathRaw = props.getProperty("SSL_CRT_PATH");
             String keyPathRaw = props.getProperty("SSL_KEY_PATH");

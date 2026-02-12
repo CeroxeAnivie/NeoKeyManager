@@ -135,6 +135,24 @@ public class Database {
     }
 
     /**
+     * [新增] 检查 Key 是否针对特定节点有独立映射 (Map)
+     * 用于 Default Node 独占逻辑的豁免判断
+     */
+    public static boolean hasSpecificMap(String realKeyName, String nodeId) {
+        // 直接查询 node_ports 表，不进行任何 Join，保证查询效率
+        String sql = "SELECT 1 FROM node_ports WHERE key_name = ? AND LOWER(node_id) = LOWER(?) LIMIT 1";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, realKeyName);
+            stmt.setString(2, nodeId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    /**
      * [工具] 安全添加列，忽略已存在的错误
      */
     private static void safeAddColumn(Statement stmt, String table, String col, String definition) {

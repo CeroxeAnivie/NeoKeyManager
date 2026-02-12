@@ -119,6 +119,38 @@ public class KeyHandler implements HttpHandler {
             return;
         }
 
+        // ==================== [逻辑变更 Start] Default Node 独占校验 ====================
+        // 只有当节点没有针对该 Key 的特殊 Map 时，才受 Default Node 限制
+
+        // A. 检查是否存在 Map (豁免权)
+        boolean hasSpecificMap = Database.hasSpecificMap(realKeyName, nodeId);
+
+        if (!hasSpecificMap) {
+            String defaultNodeCfg = Config.DEFAULT_NODE;
+            NodeAuthManager authMgr = NodeAuthManager.getInstance();
+
+            // B. 校验配置的 Default Node 是否有效 (防止配置错误导致所有节点不可用)
+            // 有效定义 = 配置不为空 且 该节点ID存在于 NodeAuth.json 中
+            boolean isDefaultNodeConfigValid = defaultNodeCfg != null
+                    && !defaultNodeCfg.isBlank()
+                    && authMgr.isNodeExplicitlyRegistered(defaultNodeCfg);
+
+            if (isDefaultNodeConfigValid) {
+                // C. 执行排他性检查
+                // 如果配置了有效的主节点，且当前请求节点不是主节点 -> 拒绝访问
+                if (!nodeId.equalsIgnoreCase(defaultNodeCfg.trim())) {
+                    ServerLogger.warnWithSource("API", "nkm.api.defaultNodeDenied", nodeId, realKeyName);
+
+                    // 返回 403 Forbidden，明确告知原因
+                    sendResponse(exchange, 403, new ApiError("Access Denied",
+                            "Default port is restricted to node: " + authMgr.getAlias(defaultNodeCfg),
+                            KeyStatus.ENABLED));
+                    return;
+                }
+            }
+        }
+        // ==================== [逻辑变更 End] ====================
+
         Map<String, Object> dbData = Database.getKeyInfoFull(realKeyName, nodeId);
         if (dbData == null) {
             sendResponse(exchange, 404, new ApiError("Key Not Found", null, null));

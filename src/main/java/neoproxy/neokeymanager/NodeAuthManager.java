@@ -105,6 +105,12 @@ public class NodeAuthManager {
         }
     }
 
+    public boolean isNodeExplicitlyRegistered(String nodeId) {
+        if (nodeId == null || nodeId.isBlank()) return false;
+        // 这里的 authMap 是 NodeAuthManager 的成员变量
+        return authMap.containsKey(nodeId.toLowerCase().trim());
+    }
+
     public static class NodeConfig {
         public String realId;
         public String displayName;

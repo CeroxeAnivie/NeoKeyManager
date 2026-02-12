@@ -1,6 +1,8 @@
 package neoproxy.neokeymanager;
 
-import com.sun.net.httpserver.*;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 import fun.ceroxe.api.utils.MyConsole;
 import neoproxy.neokeymanager.admin.AdminHandler;
 import neoproxy.neokeymanager.admin.KeyService;
@@ -110,28 +112,20 @@ public class Main {
 
         if (httpServer != null) {
             AdminHandler adminHandler = new AdminHandler();
-            SecurityDelayFilter delayFilter = new SecurityDelayFilter();
 
             // 为所有 API 路径注册 Handler 并绑定安全延迟拦截器
-            registerContext(httpServer, "/api/exec", adminHandler, delayFilter);
-            registerContext(httpServer, "/api/query", adminHandler, delayFilter);
-            registerContext(httpServer, "/api/querynomap", adminHandler, delayFilter);
-            registerContext(httpServer, "/api/lp", adminHandler, delayFilter);
-            registerContext(httpServer, "/api/lpnomap", adminHandler, delayFilter);
-            registerContext(httpServer, "/api/reload", adminHandler, delayFilter);
-            registerContext(httpServer, "/api", new KeyHandler(), delayFilter);
+            httpServer.createContext("/api/exec", adminHandler);
+            httpServer.createContext("/api/query", adminHandler);
+            httpServer.createContext("/api/querynomap", adminHandler);
+            httpServer.createContext("/api/lp", adminHandler);
+            httpServer.createContext("/api/lpnomap", adminHandler);
+            httpServer.createContext("/api/reload", adminHandler);
+            httpServer.createContext("/api", new KeyHandler());
 
             // 使用虚拟线程执行器：确保 sleep(200) 不会浪费系统线程资源
             httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             httpServer.start();
         }
-    }
-
-    /**
-     * 辅助方法：注册上下文并添加拦截器
-     */
-    private static void registerContext(HttpServer server, String path, com.sun.net.httpserver.HttpHandler handler, Filter filter) {
-        server.createContext(path, handler).getFilters().add(filter);
     }
 
     private static void stopWebServer() {
@@ -386,27 +380,5 @@ public class Main {
             sb.append(separator).append("\n");
         }
         if (myConsole != null) myConsole.log("KeyManager", sb.toString());
-    }
-
-    /**
-     * 内部类：安全延迟拦截器
-     * 通过首包 200ms 延迟，过滤低级扫描器并提升指纹安全性
-     */
-    private static class SecurityDelayFilter extends Filter {
-        @Override
-        public void doFilter(HttpExchange exchange, Chain chain) throws IOException {
-            try {
-                // 核心安全提升：强制延迟 200ms
-                Thread.sleep(200);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-            chain.doFilter(exchange);
-        }
-
-        @Override
-        public String description() {
-            return "Security First-Packet Delay (200ms)";
-        }
     }
 }
