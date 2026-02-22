@@ -1,4 +1,4 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.config;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -15,20 +15,18 @@ public class Config {
     public static String DB_PATH = "./neokey_db";
     public static String SSL_CRT_PATH = null;
     public static String SSL_KEY_PATH = null;
-
     public static String CLIENT_UPDATE_URL_7Z = "";
     public static String CLIENT_UPDATE_URL_JAR = "";
-
-    // [新增] 默认主节点 ID (用于独占默认端口)
     public static String DEFAULT_NODE = "";
+
+    // [新增] 公开节点列表配置文件路径
+    public static String NODE_JSON_FILE = "";
 
     public static void load() {
         File configFile = new File("server.properties");
-
         if (!configFile.exists()) {
             extractDefaultConfig(configFile);
         }
-
         try (FileInputStream fis = new FileInputStream(configFile)) {
             Properties props = new Properties();
             props.load(fis);
@@ -57,13 +55,15 @@ public class Config {
             String uJar = props.getProperty("CLIENT_UPDATE_URL_JAR");
             if (uJar != null) CLIENT_UPDATE_URL_JAR = uJar.trim();
 
-            // [新增] 读取 DEFAULT_NODE 配置
             String dn = props.getProperty("DEFAULT_NODE");
             if (dn != null) DEFAULT_NODE = dn.trim();
 
+            // [新增] 读取 NODE_JSON_FILE
+            String nodeJson = props.getProperty("NODE_JSON_FILE");
+            if (nodeJson != null) NODE_JSON_FILE = nodeJson.trim();
+
             String crtPathRaw = props.getProperty("SSL_CRT_PATH");
             String keyPathRaw = props.getProperty("SSL_KEY_PATH");
-
             SSL_CRT_PATH = validateSslFile(crtPathRaw, "SSL_CRT_PATH");
             SSL_KEY_PATH = validateSslFile(keyPathRaw, "SSL_KEY_PATH");
 
@@ -72,7 +72,6 @@ public class Config {
                 SSL_CRT_PATH = null;
                 SSL_KEY_PATH = null;
             }
-
         } catch (IOException e) {
             System.err.println("[Config] Critical Error loading server.properties: " + e.getMessage());
         }

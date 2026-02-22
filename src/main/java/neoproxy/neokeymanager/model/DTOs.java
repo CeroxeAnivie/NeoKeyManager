@@ -1,4 +1,4 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.model;
 
 import java.io.Serializable;
 

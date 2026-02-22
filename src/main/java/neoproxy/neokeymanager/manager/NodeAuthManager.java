@@ -1,25 +1,26 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.manager;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * 节点鉴权与隐私管理器
- * 修复：静态变量初始化顺序问题
- * 新增：支持实时热重载与鉴权时二次确认
- */
 public class NodeAuthManager {
+
     private static final String AUTH_FILE = "NodeAuth.json";
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final NodeAuthManager INSTANCE = new NodeAuthManager();
 
     // Key: Lowercase Real NodeID, Value: NodeConfig
     private final ConcurrentHashMap<String, NodeConfig> authMap = new ConcurrentHashMap<>();
+
+    // [新增] 反向映射字典: DisplayName -> Lowercase Real NodeID
+    private final ConcurrentHashMap<String, String> displayNameToRealIdMap = new ConcurrentHashMap<>();
 
     private NodeAuthManager() {
         load();
@@ -29,31 +30,22 @@ public class NodeAuthManager {
         return INSTANCE;
     }
 
-    /**
-     * 鉴权并获取显示名称
-     * 修改逻辑：内存没找到 -> 读盘 -> 再找 -> 还没找到 -> 查库
-     */
     public String authenticateAndGetAlias(String realNodeId) {
         if (realNodeId == null) return null;
         String key = realNodeId.toLowerCase().trim();
 
-        // 1. 检查内存白名单
         if (authMap.containsKey(key)) {
             return authMap.get(key).displayName;
         }
 
-        // [新增] 2. 内存没有？可能是刚手动改了文件，强制热重载一次 JSON
-        // 这实现了"有新节点进入的时候都要实时查询json确保最新"
         load();
 
-        // 3. 重载后再次检查内存
         if (authMap.containsKey(key)) {
             NodeConfig config = authMap.get(key);
             ServerLogger.info("NodeAuth", "nkm.node.hotLoaded", realNodeId, config.displayName);
             return config.displayName;
         }
 
-        // 4. 检查数据库历史映射 (自动迁移逻辑)
         if (Database.isNodeMappedAnywhere(realNodeId)) {
             String alias = "Auto-" + realNodeId;
             addNodeToAllowlist(realNodeId, alias);
@@ -71,14 +63,22 @@ public class NodeAuthManager {
         return config != null ? config.displayName : realNodeId;
     }
 
+    // [新增] O(1) 效率反向查询真实 ID
+    public String getRealIdByDisplayName(String displayName) {
+        if (displayName == null) return null;
+        return displayNameToRealIdMap.get(displayName);
+    }
+
     public synchronized void addNodeToAllowlist(String realId, String displayName) {
         NodeConfig config = new NodeConfig(realId, displayName);
-        authMap.put(realId.toLowerCase().trim(), config);
+        String lowerKey = realId.toLowerCase().trim();
+        authMap.put(lowerKey, config);
+        if (displayName != null) {
+            displayNameToRealIdMap.put(displayName, lowerKey);
+        }
         save();
     }
 
-    // [修改] 改为 public synchronized，供 reload 命令调用
-    // 同时先 clear 内存，确保删除的节点在重载后失效
     public synchronized void load() {
         File file = new File(AUTH_FILE);
         if (!file.exists()) return;
@@ -86,12 +86,16 @@ public class NodeAuthManager {
             Map<String, NodeConfig> loaded = MAPPER.readValue(file, new TypeReference<Map<String, NodeConfig>>() {
             });
 
-            // 如果希望 reload 能删除掉 JSON 里已经移除的节点，需要先清理 Map
-            // 注意：这不会清除 addNodeToAllowlist 还没保存的情况，因为 add 操作会立即 save 到磁盘
-            // 所以以磁盘为最终真理是安全的。
-            authMap.clear(); // 可选：如果你希望 reload 能把内存里多余的踢掉，就取消注释这行
+            authMap.clear();
+            displayNameToRealIdMap.clear();
 
-            loaded.forEach((k, v) -> authMap.put(k.toLowerCase().trim(), v));
+            loaded.forEach((k, v) -> {
+                String lowerKey = k.toLowerCase().trim();
+                authMap.put(lowerKey, v);
+                if (v.displayName != null) {
+                    displayNameToRealIdMap.put(v.displayName, lowerKey);
+                }
+            });
         } catch (IOException e) {
             ServerLogger.error("NodeAuth", "Failed to load NodeAuth.json", e);
         }
@@ -107,7 +111,6 @@ public class NodeAuthManager {
 
     public boolean isNodeExplicitlyRegistered(String nodeId) {
         if (nodeId == null || nodeId.isBlank()) return false;
-        // 这里的 authMap 是 NodeAuthManager 的成员变量
         return authMap.containsKey(nodeId.toLowerCase().trim());
     }
 

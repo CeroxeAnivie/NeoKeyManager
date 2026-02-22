@@ -4,8 +4,17 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import fun.ceroxe.api.utils.MyConsole;
-import neoproxy.neokeymanager.admin.AdminHandler;
-import neoproxy.neokeymanager.admin.KeyService;
+import neoproxy.neokeymanager.config.Config;
+import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.handler.AdminHandler;
+import neoproxy.neokeymanager.handler.ClientHandler;
+import neoproxy.neokeymanager.handler.KeyHandler;
+import neoproxy.neokeymanager.manager.NodeAuthManager;
+import neoproxy.neokeymanager.manager.NodeManager;
+import neoproxy.neokeymanager.manager.SessionManager;
+import neoproxy.neokeymanager.service.KeyService;
+import neoproxy.neokeymanager.utils.ServerLogger;
+import neoproxy.neokeymanager.utils.SslFactory;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
@@ -24,30 +33,26 @@ public class Main {
     public static void main(String[] args) throws IOException {
         myConsole = new MyConsole("NeoKeyManager");
         myConsole.printWelcome = false;
-
         checkARGS(args);
 
         try {
             Config.load();
             myConsole.log("NeoKeyManager", "\n" + """
                     
-                       _____                                    \s
-                      / ____|                                   \s
-                     | |        ___   _ __    ___   __  __   ___\s
-                     | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
-                     | |____  |  __/ | |    | (_) |  >  <  |  __/
-                      \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
-                                                                \s
-                                                                 \
+                       \\____\\_                                    \\s
+                      / \\___\\_|                                   \\s
+                     | |        \\__\\_   \\_ \\_\\_    \\__\\_   \\_\\_  \\_\\_   \\__\\_\\s
+                     | |       / \\_ \\\\ | '\\_\\_|  / \\_ \\\\  \\\\ \\\\/ /  / \\_ \\\\
+                     | |\\___\\_  |  \\_\\_/ | |    | (\\_) |  >  <  |  \\_\\_/
+                      \\\\\\____\\_|  \\\\\\__\\_| |\\_|     \\\\\\__\\_/  /\\_/\\\\\\_\\\\  \\\\\\__\\_|
+                                                                \\s
+                                                                 \\
                     """);
-
             ServerLogger.infoWithSource("System", "nkm.system.init");
-
             Database.init();
             registerCommands();
             startWebServer();
             myConsole.start();
-
         } catch (Exception e) {
             ServerLogger.error("System", "nkm.error.startupFail", e);
             System.exit(1);
@@ -73,11 +78,11 @@ public class Main {
 
             // 1. 重载配置文件
             Config.load();
-
-            // [新增] 2. 重载节点鉴权白名单 (NodeAuth.json)
+            // 2. 重载节点鉴权白名单
             NodeAuthManager.getInstance().load();
-
-            // 3. 重启 Web 服务
+            // 3. 热重载公开节点列表 (node.json)
+            NodeManager.getInstance().loadNodeJson();
+            // 4. 重启 Web 服务
             startWebServer();
 
             ServerLogger.infoWithSource("System", "nkm.info.reloadComplete");
@@ -112,8 +117,9 @@ public class Main {
 
         if (httpServer != null) {
             AdminHandler adminHandler = new AdminHandler();
+            ClientHandler clientHandler = new ClientHandler();
 
-            // 为所有 API 路径注册 Handler 并绑定安全延迟拦截器
+            // 为所有 API 路径注册 Handler
             httpServer.createContext("/api/exec", adminHandler);
             httpServer.createContext("/api/query", adminHandler);
             httpServer.createContext("/api/querynomap", adminHandler);
@@ -122,7 +128,9 @@ public class Main {
             httpServer.createContext("/api/reload", adminHandler);
             httpServer.createContext("/api", new KeyHandler());
 
-            // 使用虚拟线程执行器：确保 sleep(200) 不会浪费系统线程资源
+            // 【核心修复】注册独立的外部无鉴权路由
+            httpServer.createContext("/client", clientHandler);
+
             httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             httpServer.start();
         }
@@ -167,22 +175,16 @@ public class Main {
                         yield null;
                     }
                     case "web" -> keyService.execWeb(subArgs);
-
-                    // [新增] CBM 命令
                     case "setcbm" -> keyService.execSetCbm(subArgs);
                     case "delcbm" -> keyService.execDelCbm(subArgs);
                     case "listcbm" -> keyService.execListCbm(subArgs);
-
                     default -> {
                         ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
                         printKeyUsage();
                         yield null;
                     }
                 };
-
-                if (result != null) {
-                    myConsole.log("KeyManager", result);
-                }
+                if (result != null) myConsole.log("KeyManager", result);
             } catch (Exception e) {
                 ServerLogger.error("Command", "nkm.error.execFail", e);
             }
@@ -196,13 +198,10 @@ public class Main {
                 ServerLogger.error("WebManager", "nkm.error.execFail", e);
             }
         });
-
         myConsole.registerCommand("list", ServerLogger.getMessage("nkm.usage.help.listActive"), args -> handleTopLevelList());
         myConsole.registerCommand("reload", "Reload System", args -> handleReload());
         myConsole.registerCommand("stop", "Stop System", args -> System.exit(0));
     }
-
-    // ==================== Command Handlers (CLI) ====================
 
     private static void printKeyUsage() {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
@@ -217,7 +216,7 @@ public class Main {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
         myConsole.log("Usage", "key setsingle/delsingle/listsingle ... - Manage Single Mode");
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.cbm")); // 新增用法
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.cbm"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
     }
 
@@ -320,8 +319,6 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
-
-        // [修改] 增加列宽适配别名
         int maxNameLen = 16, maxNodeLen = 15, maxPortLen = 6;
         Map<String, String> displayNames = new java.util.HashMap<>();
         Map<String, String> occupancyMap = new java.util.HashMap<>();
@@ -339,7 +336,6 @@ public class Main {
             occupancyMap.put(displayKey, currentConns + " / " + maxConns);
 
             for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
-                // [修改] 转换为别名
                 String realNodeId = nodeEntry.getKey();
                 String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
                 maxNodeLen = Math.max(maxNodeLen, alias.length());
@@ -367,9 +363,8 @@ public class Main {
             boolean isFirstNode = true;
             for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
                 String realNodeId = nodeEntry.getKey();
-                // [修改] 显示别名
                 String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
-                String portString = nodeEntry.getValue(); // 已包含详情
+                String portString = nodeEntry.getValue();
                 if (isFirstNode) {
                     sb.append(String.format(rowFmtKey, showName, usage, alias, portString)).append("\n");
                     isFirstNode = false;

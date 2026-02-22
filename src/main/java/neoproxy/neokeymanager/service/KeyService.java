@@ -1,9 +1,9 @@
-package neoproxy.neokeymanager.admin;
+package neoproxy.neokeymanager.service;
 
-import neoproxy.neokeymanager.Database;
-import neoproxy.neokeymanager.ServerLogger;
-import neoproxy.neokeymanager.SessionManager;
-import neoproxy.neokeymanager.Utils;
+import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.manager.SessionManager;
+import neoproxy.neokeymanager.utils.ServerLogger;
+import neoproxy.neokeymanager.utils.Utils;
 
 import java.util.ArrayList;
 import java.util.List;

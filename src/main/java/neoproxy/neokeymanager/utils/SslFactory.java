@@ -1,4 +1,4 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.utils;
 
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.cert.X509CertificateHolder;

@@ -1,4 +1,8 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.manager;
+
+import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.model.Protocol;
+import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;

@@ -1,4 +1,6 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.utils;
+
+import neoproxy.neokeymanager.Main;
 
 import java.text.MessageFormat;
 import java.util.Locale;

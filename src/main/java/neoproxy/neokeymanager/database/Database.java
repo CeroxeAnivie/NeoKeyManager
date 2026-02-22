@@ -1,8 +1,11 @@
-package neoproxy.neokeymanager;
+package neoproxy.neokeymanager.database;
 
-import neoproxy.neokeymanager.DTOs.KeyStateResult;
-import neoproxy.neokeymanager.DTOs.KeyStatus;
-import neoproxy.neokeymanager.admin.AdminDTOs;
+import neoproxy.neokeymanager.config.Config;
+import neoproxy.neokeymanager.model.AdminDTOs;
+import neoproxy.neokeymanager.model.DTOs.KeyStateResult;
+import neoproxy.neokeymanager.model.DTOs.KeyStatus;
+import neoproxy.neokeymanager.model.Protocol;
+import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.sql.*;
 import java.time.LocalDateTime;
@@ -16,10 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class Database {
-    // [CONFIG] 切换为 SQLite 驱动
     private static final String DB_DRIVER = "org.sqlite.JDBC";
-    private static final String DB_USER = "";     // SQLite 不需要
-    private static final String DB_PASSWORD = ""; // SQLite 不需要
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy/M/d-HH:mm");
 
     private static final String STATUS_ENABLED = "ENABLED";
@@ -39,9 +39,6 @@ public class Database {
     // [应用层缓冲] 保持原有逻辑，流量扣费内存聚合，极大降低 IO
     private static final ConcurrentHashMap<String, Double> trafficBuffer = new ConcurrentHashMap<>();
 
-    // [性能优化] 保持一个连接以维持 WAL 共享内存映射 (Shared-Memory)，减少系统调用开销
-    private static Connection keepAliveConn;
-
     private static String getDbUrl() {
         return "jdbc:sqlite:" + Config.DB_PATH;
     }
@@ -53,7 +50,8 @@ public class Database {
 
             // [CRITICAL] 建立常驻连接，并进行 SQLite 核心性能调优
             // 这里对应参考代码的 DatabaseContext 构造函数逻辑
-            keepAliveConn = DriverManager.getConnection(getDbUrl());
+            // [性能优化] 保持一个连接以维持 WAL 共享内存映射 (Shared-Memory)，减少系统调用开销
+            Connection keepAliveConn = DriverManager.getConnection(getDbUrl());
             try (Statement stmt = keepAliveConn.createStatement()) {
                 // 1. 开启 WAL 模式：实现一写多读，消除锁竞争
                 stmt.execute("PRAGMA journal_mode = WAL;");
