@@ -46,10 +46,10 @@
 
 ```bash
 # 默认启动 (根据系统语言)
-java -jar NeoKeyManager-3.0.0.jar
+java -jar NeoKeyManager-X.X.X.jar
 
 # 强制中文环境启动
-java -jar NeoKeyManager-3.0.0.jar --zh-cn
+java -jar NeoKeyManager-X.X.X.jar --zh-cn
 ```
 
 ### 3. 配置文件 (`server.properties`)
