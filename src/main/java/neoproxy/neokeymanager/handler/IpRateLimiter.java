@@ -14,16 +14,24 @@ public class IpRateLimiter {
     private static final ConcurrentHashMap<String, RateRecord> records = new ConcurrentHashMap<>();
 
     public static String getClientIp(HttpExchange exchange) {
-        String xff = exchange.getRequestHeaders().getFirst("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
+        // TCP 物理层的真实 IP (无法伪造)
+        String physicalIp = exchange.getRemoteAddress().getAddress().getHostAddress();
+
+        // 只有当你确认请求是由你自己的 Nginx 或 CF 转发过来的（例如物理 IP 是 127.0.0.1 或是内网 IP），
+        // 才去信任 Header 里的 IP。否则直接返回 physicalIp。
+        if ("127.0.0.1".equals(physicalIp) || physicalIp.startsWith("10.") || physicalIp.startsWith("192.168.")) {
+            String xff = exchange.getRequestHeaders().getFirst("X-Forwarded-For");
+            if (xff != null && !xff.isBlank()) {
+                return xff.split(",")[0].trim();
+            }
+            String realIp = exchange.getRequestHeaders().getFirst("X-Real-IP");
+            if (realIp != null && !realIp.isBlank()) {
+                return realIp;
+            }
         }
-        String realIp = exchange.getRequestHeaders().getFirst("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp;
-        }
-        return exchange.getRemoteAddress().getAddress().getHostAddress();
+        return physicalIp;
     }
+
 
     public static boolean allow(String ip) {
         if (ip == null || ip.isBlank()) return false;
