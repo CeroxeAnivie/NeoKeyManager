@@ -75,6 +75,13 @@ public class NodeManager {
         nodeLastSeenMap.put(realNodeId.toLowerCase().trim(), System.currentTimeMillis());
     }
 
+    // [新增] 暴露给 Admin API 的查询接口：判断某节点是否在线
+    public boolean isNodeOnline(String realNodeId) {
+        if (realNodeId == null || realNodeId.isBlank()) return false;
+        Long lastSeen = nodeLastSeenMap.get(realNodeId.toLowerCase().trim());
+        return lastSeen != null && (System.currentTimeMillis() - lastSeen) <= NODE_TIMEOUT_MS;
+    }
+
     public List<Protocol.PublicNodeInfo> getOnlinePublicNodes() {
         List<Protocol.PublicNodeInfo> result = new ArrayList<>();
         if (!isConfigured) return result;

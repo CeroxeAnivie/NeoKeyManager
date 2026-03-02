@@ -5,9 +5,12 @@ import com.sun.net.httpserver.HttpHandler;
 import neoproxy.neokeymanager.Main;
 import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.manager.NodeAuthManager;
+import neoproxy.neokeymanager.manager.NodeManager;
 import neoproxy.neokeymanager.model.AdminDTOs.AdminResponse;
 import neoproxy.neokeymanager.model.AdminDTOs.ExecRequest;
 import neoproxy.neokeymanager.model.AdminDTOs.KeyDetail;
+import neoproxy.neokeymanager.model.AdminDTOs.NodeStatusDetail;
 import neoproxy.neokeymanager.service.KeyService;
 import neoproxy.neokeymanager.utils.ServerLogger;
 import neoproxy.neokeymanager.utils.Utils;
@@ -16,6 +19,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -57,6 +61,9 @@ public class AdminHandler implements HttpHandler {
                 // S-Level Add: 允许通过 API 重载系统配置
                 Main.handleReload();
                 sendJson(exchange, 200, new AdminResponse(true, "System Reloaded", null));
+            } else if (path.equals("/api/nodestatus") && "GET".equals(method)) {
+                // [新增] 路由: 获得所有的每个节点是否在线的状态
+                handleGetNodeStatus(exchange);
             } else {
                 sendJson(exchange, 404, new AdminResponse(false, "Endpoint not found", null));
             }
@@ -112,6 +119,10 @@ public class AdminHandler implements HttpHandler {
                 // NEW: Web command exposure
                 case "web" -> keyService.execWeb(args);
 
+                case "setcbm" -> keyService.execSetCbm(args);
+                case "delcbm" -> keyService.execDelCbm(args);
+                case "listcbm" -> keyService.execListCbm(args);
+
                 default -> throw new IllegalArgumentException("Unknown command: " + cmd);
             };
 
@@ -157,6 +168,28 @@ public class AdminHandler implements HttpHandler {
         } else {
             sendJson(exchange, 200, new AdminResponse(true, "Lookup successful", data.get(0)));
         }
+    }
+
+    // [新增] 处理节点状态查询的方法
+    private void handleGetNodeStatus(HttpExchange exchange) throws IOException {
+        List<NodeAuthManager.NodeConfig> allNodes = NodeAuthManager.getInstance().getAllRegisteredNodes();
+        NodeManager nodeManager = NodeManager.getInstance();
+
+        List<NodeStatusDetail> result = new ArrayList<>();
+        for (NodeAuthManager.NodeConfig node : allNodes) {
+            boolean isOnline = nodeManager.isNodeOnline(node.realId);
+            result.add(new NodeStatusDetail(node.realId, node.displayName, isOnline));
+        }
+
+        // [人性化] 排序：在线节点排在前面，同状态按展示名称字母排序
+        result.sort((a, b) -> {
+            if (a.isOnline != b.isOnline) return a.isOnline ? -1 : 1;
+            if (a.displayName == null) return 1;
+            if (b.displayName == null) return -1;
+            return a.displayName.compareToIgnoreCase(b.displayName);
+        });
+
+        sendJson(exchange, 200, new AdminResponse(true, "Node status retrieved successfully", result));
     }
 
     private void sendJson(HttpExchange exchange, int code, Object obj) throws IOException {

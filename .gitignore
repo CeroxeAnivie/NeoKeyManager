@@ -40,3 +40,6 @@ build/
 
 logs
 all_code.txt
+neokey_db-shm
+neokey_db-wal
+neokey_db-shm

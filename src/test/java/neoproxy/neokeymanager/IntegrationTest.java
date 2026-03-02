@@ -58,6 +58,9 @@ public class IntegrationTest {
 
             testPublicNodeListAndRateLimit();
 
+            // [新增] 测试新增的节点状态查询 API
+            testAdminNodeStatusAPI();
+
             cleanup();
             restoreConfigs();
 
@@ -334,6 +337,50 @@ public class IntegrationTest {
             throw new RuntimeException("Expected 429 Too Many Requests, but got " + respLimit.statusCode());
         }
         System.out.println("   -> IP Rate Limiting (10 requests/day) [OK]");
+    }
+
+    // ==================== Phase 13 ====================
+
+    private static void testAdminNodeStatusAPI() throws Exception {
+        printHeader("13. Admin Node Status API");
+
+        // 1. 发送心跳，模拟 'NodeC' 在线
+        postNps("/api/node/status", "{ \"nodeId\": \"NodeC\", \"activeTunnels\": 0 }");
+
+        // 2. 调用 /api/nodestatus 接口
+        JsonNode resp = getAdmin("/api/nodestatus");
+        if (!resp.get("success").asBoolean()) {
+            throw new RuntimeException("Node status API failed: " + resp.get("message").asText());
+        }
+
+        JsonNode data = resp.get("data");
+        if (!data.isArray() || data.size() == 0) {
+            throw new RuntimeException("Node status API returned empty or invalid data array.");
+        }
+
+        boolean nodeCOnlineFound = false;
+        boolean structureValid = false;
+
+        // 3. 验证返回的数据结构与刚才设置的状态
+        for (JsonNode node : data) {
+            if (node.has("realId") && node.has("displayName") && node.has("isOnline")) {
+                structureValid = true;
+            }
+            if ("nodec".equalsIgnoreCase(node.get("realId").asText())) {
+                if (node.get("isOnline").asBoolean()) {
+                    nodeCOnlineFound = true;
+                }
+            }
+        }
+
+        if (!structureValid) {
+            throw new RuntimeException("Node status API data structure is invalid (missing required fields).");
+        }
+        if (!nodeCOnlineFound) {
+            throw new RuntimeException("NodeC should be online after status report, but it is reported as offline by API.");
+        }
+
+        System.out.println("   -> Node Status API Data Fetch & Structure [OK]");
     }
 
     private static void cleanup() {

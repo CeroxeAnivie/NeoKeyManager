@@ -38,16 +38,16 @@ public class Main {
         try {
             Config.load();
             myConsole.log("NeoKeyManager", "\n" + """
-            
-               _____                                    \s
-              / ____|                                   \s
-             | |        ___   _ __    ___   __  __   ___\s
-             | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
-             | |____  |  __/ | |    | (_) |  >  <  |  __/
-              \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
-                                                        \s
-                                                         \
-            """);
+                    
+                       _____                                    \s
+                      / ____|                                   \s
+                     | |        ___   _ __    ___   __  __   ___\s
+                     | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
+                     | |____  |  __/ | |    | (_) |  >  <  |  __/
+                      \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
+                                                                \s
+                                                                 \
+                    """);
             ServerLogger.infoWithSource("System", "nkm.system.init");
             Database.init();
             registerCommands();
@@ -126,6 +126,10 @@ public class Main {
             httpServer.createContext("/api/lp", adminHandler);
             httpServer.createContext("/api/lpnomap", adminHandler);
             httpServer.createContext("/api/reload", adminHandler);
+
+            // [新增] 注册 /api/nodestatus 的路由给 AdminHandler 处理
+            httpServer.createContext("/api/nodestatus", adminHandler);
+
             httpServer.createContext("/api", new KeyHandler());
 
             // 【核心修复】注册独立的外部无鉴权路由

@@ -7,6 +7,8 @@ import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -19,7 +21,7 @@ public class NodeAuthManager {
     // Key: Lowercase Real NodeID, Value: NodeConfig
     private final ConcurrentHashMap<String, NodeConfig> authMap = new ConcurrentHashMap<>();
 
-    // [新增] 反向映射字典: DisplayName -> Lowercase Real NodeID
+    // 反向映射字典: DisplayName -> Lowercase Real NodeID
     private final ConcurrentHashMap<String, String> displayNameToRealIdMap = new ConcurrentHashMap<>();
 
     private NodeAuthManager() {
@@ -63,10 +65,15 @@ public class NodeAuthManager {
         return config != null ? config.displayName : realNodeId;
     }
 
-    // [新增] O(1) 效率反向查询真实 ID
+    // O(1) 效率反向查询真实 ID
     public String getRealIdByDisplayName(String displayName) {
         if (displayName == null) return null;
         return displayNameToRealIdMap.get(displayName);
+    }
+
+    // [新增] 获取所有已注册的节点配置列表
+    public List<NodeConfig> getAllRegisteredNodes() {
+        return new ArrayList<>(authMap.values());
     }
 
     public synchronized void addNodeToAllowlist(String realId, String displayName) {

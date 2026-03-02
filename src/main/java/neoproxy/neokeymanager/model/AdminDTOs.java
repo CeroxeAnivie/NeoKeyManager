@@ -44,4 +44,17 @@ public class AdminDTOs {
     public static class ExecRequest implements Serializable {
         public List<String> args; // 对应 CLI 的参数列表，例如 ["user1", "b=20"]
     }
+
+    // [新增] 节点在线状态详情
+    public static class NodeStatusDetail implements Serializable {
+        public String realId;
+        public String displayName;
+        public boolean isOnline;
+
+        public NodeStatusDetail(String realId, String displayName, boolean isOnline) {
+            this.realId = realId;
+            this.displayName = displayName;
+            this.isOnline = isOnline;
+        }
+    }
 }
