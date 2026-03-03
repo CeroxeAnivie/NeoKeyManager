@@ -105,6 +105,7 @@ public class AdminHandler implements HttpHandler {
 
                 case "map" -> keyService.execMapKey(args);
                 case "delmap" -> keyService.execDelMap(args);
+                case "delnode" -> keyService.execDelNode(args);
 
                 case "enable" -> keyService.execEnable(args, true);
                 case "disable" -> keyService.execEnable(args, false);

@@ -126,8 +126,6 @@ public class Main {
             httpServer.createContext("/api/lp", adminHandler);
             httpServer.createContext("/api/lpnomap", adminHandler);
             httpServer.createContext("/api/reload", adminHandler);
-
-            // [新增] 注册 /api/nodestatus 的路由给 AdminHandler 处理
             httpServer.createContext("/api/nodestatus", adminHandler);
 
             httpServer.createContext("/api", new KeyHandler());
@@ -165,6 +163,7 @@ public class Main {
                     case "listsingle" -> keyService.execListSingle(subArgs);
                     case "map" -> keyService.execMapKey(subArgs);
                     case "delmap" -> keyService.execDelMap(subArgs);
+                    case "delnode" -> keyService.execDelNode(subArgs);
                     case "del" -> keyService.execDelKey(subArgs);
                     case "enable" -> keyService.execEnable(subArgs, true);
                     case "disable" -> keyService.execEnable(subArgs, false);
@@ -214,6 +213,7 @@ public class Main {
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
+        myConsole.log("Usage", "key delnode <nodeid> - Delete all mappings for a node");
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
         myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
@@ -323,11 +323,31 @@ public class Main {
             ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
             return;
         }
+
+        // Pre-filter invalid nodes out of the snapshot list
+        Map<String, Map<String, String>> filteredSessions = new java.util.HashMap<>();
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            Map<String, String> validNodes = new java.util.HashMap<>();
+            for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
+                if (NodeAuthManager.getInstance().isNodeExplicitlyRegistered(nodeEntry.getKey())) {
+                    validNodes.put(nodeEntry.getKey(), nodeEntry.getValue());
+                }
+            }
+            if (!validNodes.isEmpty()) {
+                filteredSessions.put(entry.getKey(), validNodes);
+            }
+        }
+
+        if (filteredSessions.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
+            return;
+        }
+
         int maxNameLen = 16, maxNodeLen = 15, maxPortLen = 6;
         Map<String, String> displayNames = new java.util.HashMap<>();
         Map<String, String> occupancyMap = new java.util.HashMap<>();
 
-        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+        for (Map.Entry<String, Map<String, String>> entry : filteredSessions.entrySet()) {
             String displayKey = entry.getKey();
             String realKey = Database.getRealKeyName(displayKey);
             String showName = displayKey;
@@ -359,7 +379,7 @@ public class Main {
         sb.append(separator).append("\n");
         sb.append(String.format(headerFmt, "SESSION (Link->Real)", "OCCUPANCY", "NODE", "PORT (DETAIL)")).append("\n");
         sb.append(separator).append("\n");
-        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+        for (Map.Entry<String, Map<String, String>> entry : filteredSessions.entrySet()) {
             String displayKey = entry.getKey();
             String showName = displayNames.get(displayKey);
             String usage = occupancyMap.get(displayKey);
@@ -373,6 +393,7 @@ public class Main {
                     sb.append(String.format(rowFmtKey, showName, usage, alias, portString)).append("\n");
                     isFirstNode = false;
                 } else {
+                    sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                     sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                 }
             }

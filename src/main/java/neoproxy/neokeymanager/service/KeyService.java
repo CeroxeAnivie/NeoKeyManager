@@ -271,6 +271,16 @@ public class KeyService {
         }
     }
 
+    public String execDelNode(List<String> args) {
+        if (args.size() != 1) {
+            throw new IllegalArgumentException("Usage: key delnode <nodeid>");
+        }
+        String nodeId = args.get(0);
+        int count = Database.deleteNodeMapByNode(nodeId);
+        SessionManager.getInstance().releaseAllSessionsForNode(nodeId);
+        return String.format("Deleted mappings for node [%s] from %d keys.", nodeId, count);
+    }
+
     public String execEnable(List<String> args, boolean enable) {
         if (args.size() != 1) {
             // 使用 nkm.usage.toggle

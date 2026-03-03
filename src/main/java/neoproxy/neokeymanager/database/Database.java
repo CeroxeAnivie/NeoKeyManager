@@ -674,8 +674,13 @@ public class Database {
         Map<String, List<String>> mapInfo = new HashMap<>();
         try (Connection conn = getConnection()) {
             try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT key_name, node_id, port FROM node_ports")) {
-                while (rs.next()) mapInfo.computeIfAbsent(rs.getString("key_name"), k -> new ArrayList<>())
-                        .add(String.format("%s -> %s", rs.getString("node_id"), rs.getString("port")));
+                while (rs.next()) {
+                    String nodeId = rs.getString("node_id");
+                    if (neoproxy.neokeymanager.manager.NodeAuthManager.getInstance().isNodeExplicitlyRegistered(nodeId)) {
+                        mapInfo.computeIfAbsent(rs.getString("key_name"), k -> new ArrayList<>())
+                                .add(String.format("%s -> %s", nodeId, rs.getString("port")));
+                    }
+                }
             }
             String sql = "SELECT * FROM keys ORDER BY name ASC";
             try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(sql)) {
@@ -755,6 +760,17 @@ public class Database {
             return stmt.executeUpdate() > 0;
         } catch (SQLException e) {
             return false;
+        }
+    }
+
+    public static int deleteNodeMapByNode(String nodeId) {
+        String sql = "DELETE FROM node_ports WHERE LOWER(node_id) = LOWER(?)";
+        try (Connection conn = getConnection(); PreparedStatement stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, nodeId);
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            ServerLogger.error("Database", "nkm.db.mapFail", e);
+            return 0;
         }
     }
 
@@ -875,8 +891,13 @@ public class Database {
         try (Connection conn = getConnection()) {
             if (includeMaps) {
                 try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT key_name, node_id, port FROM node_ports")) {
-                    while (rs.next()) mapInfo.computeIfAbsent(rs.getString("key_name"), k -> new ArrayList<>())
-                            .add(new AdminDTOs.MapNode(rs.getString("node_id"), rs.getString("port")));
+                    while (rs.next()) {
+                        String nodeId = rs.getString("node_id");
+                        if (neoproxy.neokeymanager.manager.NodeAuthManager.getInstance().isNodeExplicitlyRegistered(nodeId)) {
+                            mapInfo.computeIfAbsent(rs.getString("key_name"), k -> new ArrayList<>())
+                                    .add(new AdminDTOs.MapNode(nodeId, rs.getString("port")));
+                        }
+                    }
                 }
             }
             String sql = "SELECT * FROM keys";

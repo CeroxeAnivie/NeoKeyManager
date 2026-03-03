@@ -278,6 +278,18 @@ public class SessionManager {
         }
     }
 
+    public void releaseAllSessionsForNode(String nodeId) {
+        if (nodeId == null) return;
+        String targetPrefix = nodeId.toLowerCase() + "|";
+        sessions.forEach((realKeyName, nodeMap) -> {
+            synchronized (nodeMap) {
+                nodeMap.entrySet().removeIf(e -> e.getKey().toLowerCase().startsWith(targetPrefix));
+                if (nodeMap.isEmpty()) sessions.remove(realKeyName);
+            }
+        });
+        ServerLogger.infoWithSource("Session", "nkm.session.released", "All", nodeId);
+    }
+
     public void forceReleaseKey(String realKeyName) {
         sessions.remove(realKeyName);
     }
