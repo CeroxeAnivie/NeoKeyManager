@@ -80,34 +80,38 @@ public class Utils {
         Map<String, String> result = new HashMap<>();
         if (query == null || query.isBlank()) return result;
         for (String param : query.split("&")) {
-            String[] entry = param.split("=");
-            if (entry.length > 1) {
-                result.put(
-                        URLDecoder.decode(entry[0], StandardCharsets.UTF_8),
-                        URLDecoder.decode(entry[1], StandardCharsets.UTF_8)
-                );
+            String[] entry = param.split("=", 2);
+            if (entry.length > 0) {
+                String key = URLDecoder.decode(entry[0], StandardCharsets.UTF_8);
+                // 只有存在值时才放入map，没有值时key不存在（返回null）
+                if (entry.length > 1) {
+                    result.put(key, URLDecoder.decode(entry[1], StandardCharsets.UTF_8));
+                }
             }
         }
         return result;
     }
 
     public static int calculatePortSize(String port) {
-        if (port == null || port.isBlank()) return 1;
+        if (port == null || port.isBlank()) return 0;
         Matcher m = PORT_RANGE_PATTERN.matcher(port);
         if (m.matches()) {
             try {
                 int start = Integer.parseInt(m.group(1));
                 if (m.group(2) != null) {
                     int end = Integer.parseInt(m.group(2));
-                    return Math.max(1, end - start + 1);
+                    return Math.max(0, end - start + 1);
                 }
+                return 1;
             } catch (NumberFormatException ignored) {
             }
         }
-        return 1;
+        return 0;
     }
 
     public static boolean isDynamicPort(String port) {
-        return port != null && port.contains("-");
+        if (port == null || port.isBlank()) return false;
+        // "auto" 或 "AUTO" 等表示动态端口分配
+        return port.equalsIgnoreCase("auto");
     }
 }

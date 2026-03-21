@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class SessionManager {
-    private static final SessionManager INSTANCE = new SessionManager();
+    private static SessionManager INSTANCE = new SessionManager();
     private final ConcurrentHashMap<String, ConcurrentHashMap<String, NodeSession>> sessions = new ConcurrentHashMap<>();
 
     private final ScheduledExecutorService monitor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -27,6 +27,17 @@ public class SessionManager {
 
     public static SessionManager getInstance() {
         return INSTANCE;
+    }
+
+    /**
+     * 重置单例实例（仅用于测试）
+     */
+    public static synchronized void resetInstance() {
+        // 关闭旧的监控线程
+        if (INSTANCE != null) {
+            INSTANCE.monitor.shutdownNow();
+        }
+        INSTANCE = new SessionManager();
     }
 
     private String getSessionKey(String nodeId, String displayKey) {

@@ -1,9 +1,7 @@
 package neoproxy.neokeymanager.config;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Properties;
@@ -27,9 +25,9 @@ public class Config {
         if (!configFile.exists()) {
             extractDefaultConfig(configFile);
         }
-        try (FileInputStream fis = new FileInputStream(configFile)) {
+        try (InputStreamReader reader = new InputStreamReader(new FileInputStream(configFile), StandardCharsets.UTF_8)) {
             Properties props = new Properties();
-            props.load(fis);
+            props.load(reader);
 
             String p = props.getProperty("SERVER_PORT");
             if (p != null) {
@@ -103,5 +101,21 @@ public class Config {
             System.err.println("[Config] Failed to extract default configuration: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    /**
+     * 重置配置为默认值（仅用于测试）
+     */
+    public static void resetToDefaults() {
+        PORT = 8080;
+        AUTH_TOKEN = "default_token";
+        ADMIN_TOKEN = "admin_secret";
+        DB_PATH = "./neokey_db";
+        SSL_CRT_PATH = null;
+        SSL_KEY_PATH = null;
+        CLIENT_UPDATE_URL_7Z = "";
+        CLIENT_UPDATE_URL_JAR = "";
+        DEFAULT_NODE = "";
+        NODE_JSON_FILE = "";
     }
 }

@@ -39,7 +39,17 @@ public class Database {
     // [应用层缓冲] 保持原有逻辑，流量扣费内存聚合，极大降低 IO
     private static final ConcurrentHashMap<String, Double> trafficBuffer = new ConcurrentHashMap<>();
 
+    // 内存数据库连接保持器，确保内存数据库在测试期间不被回收
+    private static Connection memoryDbConnection;
+    private static String currentMemoryDbName;
+
     private static String getDbUrl() {
+        // 对于内存数据库，使用共享缓存模式以支持多连接
+        if (Config.DB_PATH.startsWith(":memory:")) {
+            // 提取内存数据库名称（如果有）
+            String dbName = Config.DB_PATH.equals(":memory:") ? "default" : Config.DB_PATH.substring(8);
+            return "jdbc:sqlite:file:" + dbName + "?mode=memory&cache=shared";
+        }
         return "jdbc:sqlite:" + Config.DB_PATH;
     }
 
@@ -52,8 +62,15 @@ public class Database {
             // 这里对应参考代码的 DatabaseContext 构造函数逻辑
             // [性能优化] 保持一个连接以维持 WAL 共享内存映射 (Shared-Memory)，减少系统调用开销
             Connection keepAliveConn = DriverManager.getConnection(getDbUrl());
+            
+            // 对于内存数据库，保持连接以防止数据库被回收
+            if (Config.DB_PATH.startsWith(":memory:")) {
+                memoryDbConnection = keepAliveConn;
+                currentMemoryDbName = Config.DB_PATH;
+            }
+            
             try (Statement stmt = keepAliveConn.createStatement()) {
-                // 1. 开启 WAL 模式：实现一写多读，消除锁竞争
+                // 1. 开启 WAL 模式：实现一写多读，消除锁竞争（内存数据库也支持）
                 stmt.execute("PRAGMA journal_mode = WAL;");
                 // 2. 同步模式 NORMAL：在断电保护和写入速度间取得最佳平衡
                 stmt.execute("PRAGMA synchronous = NORMAL;");

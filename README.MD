@@ -42,7 +42,20 @@
 ### 1. 环境要求
 *   **Java 21** (JDK 21+) - **必须**，否则无法运行。
 
-### 2. 启动
+### 2. 从源码构建
+
+```bash
+# 克隆仓库后，使用 Maven Wrapper 构建
+./mvnw clean package
+
+# 运行测试
+./mvnw test
+
+# 构建完成后，jar 包位于 target/ 目录
+java -jar target/NeoKeyManager-4.0.2.jar
+```
+
+### 3. 启动
 
 ```bash
 # 默认启动 (根据系统语言)
@@ -52,7 +65,7 @@ java -jar NeoKeyManager-X.X.X.jar
 java -jar NeoKeyManager-X.X.X.jar --zh-cn
 ```
 
-### 3. 配置文件 (`server.properties`)
+### 4. 配置文件 (`server.properties`)
 
 首次运行会自动生成。**请务必修改默认 Token！**
 

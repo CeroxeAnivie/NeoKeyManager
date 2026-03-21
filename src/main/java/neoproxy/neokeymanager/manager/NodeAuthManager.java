@@ -19,7 +19,7 @@ public class NodeAuthManager {
 
     private static final String AUTH_FILE = "NodeAuth.json";
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final NodeAuthManager INSTANCE = new NodeAuthManager();
+    private static NodeAuthManager INSTANCE = new NodeAuthManager();
 
     // Key: Lowercase Real NodeID, Value: NodeConfig
     private final ConcurrentHashMap<String, NodeConfig> authMap = new ConcurrentHashMap<>();
@@ -33,6 +33,13 @@ public class NodeAuthManager {
 
     public static NodeAuthManager getInstance() {
         return INSTANCE;
+    }
+
+    /**
+     * 重置单例实例（仅用于测试）
+     */
+    public static synchronized void resetInstance() {
+        INSTANCE = new NodeAuthManager();
     }
 
     /**
@@ -91,10 +98,14 @@ public class NodeAuthManager {
      * 手动添加节点到白名单并持久化
      */
     public synchronized void addNodeToAllowlist(String realId, String displayName) {
+        if (realId == null || realId.isBlank()) {
+            ServerLogger.warn("NodeAuth", "Cannot add node with null or blank realId");
+            return;
+        }
         NodeConfig config = new NodeConfig(realId, displayName);
         String lowerKey = realId.toLowerCase().trim();
         authMap.put(lowerKey, config);
-        if (displayName != null) {
+        if (displayName != null && !displayName.isBlank()) {
             displayNameToRealIdMap.put(displayName, lowerKey);
         }
         save();
@@ -104,9 +115,11 @@ public class NodeAuthManager {
      * 从 NodeAuth.json 加载配置
      */
     public synchronized void load() {
-        File file = new File(AUTH_FILE);
+        // 优先使用系统属性指定的文件路径，否则使用默认路径
+        String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
+        File file = new File(authFilePath);
         if (!file.exists()) {
-            ServerLogger.warn("NodeAuth", "NodeAuth.json not found, allowlist is empty.");
+            ServerLogger.warn("NodeAuth", authFilePath + " not found, allowlist is empty.");
             authMap.clear();
             displayNameToRealIdMap.clear();
             return;
@@ -139,7 +152,8 @@ public class NodeAuthManager {
      */
     private synchronized void save() {
         try {
-            MAPPER.writerWithDefaultPrettyPrinter().writeValue(new File(AUTH_FILE), authMap);
+            String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
+            MAPPER.writerWithDefaultPrettyPrinter().writeValue(new File(authFilePath), authMap);
         } catch (IOException e) {
             ServerLogger.error("NodeAuth", "Failed to save NodeAuth.json", e);
         }

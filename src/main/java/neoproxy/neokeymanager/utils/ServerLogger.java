@@ -19,6 +19,10 @@ public class ServerLogger {
     }
 
     public static void setLocale(Locale locale) {
+        if (locale == null) {
+            System.err.println("[ServerLogger] Warning: Locale is null, using default locale");
+            locale = Locale.getDefault();
+        }
         currentLocale = locale;
         try {
             bundle = ResourceBundle.getBundle(BUNDLE_NAME, currentLocale);
@@ -82,6 +86,7 @@ public class ServerLogger {
     }
 
     public static String getMessage(String key, Object... args) {
+        if (key == null) return "!!! Null Key !!!";
         if (bundle == null) return "!!! No Bundle: " + key + " !!!";
         try {
             String pattern = bundle.getString(key);
