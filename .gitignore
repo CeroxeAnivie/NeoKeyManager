@@ -43,3 +43,6 @@ all_code.txt
 neokey_db-shm
 neokey_db-wal
 neokey_db
+server.properties
+NodeAuth.json
+dependency-reduced-pom.xml

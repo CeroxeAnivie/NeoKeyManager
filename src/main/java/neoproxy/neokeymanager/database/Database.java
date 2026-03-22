@@ -53,9 +53,34 @@ public class Database {
         return "jdbc:sqlite:" + Config.DB_PATH;
     }
 
+    /**
+     * 检测当前是否在测试环境中运行
+     */
+    private static boolean isTestEnvironment() {
+        try {
+            StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+            for (StackTraceElement element : stackTrace) {
+                String className = element.getClassName();
+                if (className.contains("org.junit.") ||
+                    className.contains("org.testng.") ||
+                    className.contains("org.junit.jupiter.")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     public static void init() {
         try {
-            ServerLogger.infoWithSource("Database", "nkm.db.loadingDriver");
+            // 在测试模式或使用内存数据库时，使用更简洁的日志输出
+            boolean isMemoryDb = Config.DB_PATH.startsWith(":memory:");
+            if (isTestEnvironment() || isMemoryDb) {
+                // 静默初始化，不打印日志
+            } else {
+                ServerLogger.infoWithSource("Database", "nkm.db.loadingDriver");
+            }
             Class.forName(DB_DRIVER);
 
             // [CRITICAL] 建立常驻连接，并进行 SQLite 核心性能调优
@@ -132,7 +157,10 @@ public class Database {
                 safeAddColumn(stmt, "keys", "custom_blocking_msg", "VARCHAR(255) DEFAULT NULL");
                 safeAddColumn(stmt, "key_aliases", "is_single", "BOOLEAN DEFAULT 0");
 
-                ServerLogger.infoWithSource("Database", "nkm.db.schemaInit", "Engine: SQLite WAL");
+                // 在测试模式或使用内存数据库时，不打印初始化完成日志
+                if (!isTestEnvironment() && !isMemoryDb) {
+                    ServerLogger.infoWithSource("Database", "nkm.db.schemaInit", "Engine: SQLite WAL");
+                }
             }
 
             // [IO BUFFER] 启动定时刷库任务

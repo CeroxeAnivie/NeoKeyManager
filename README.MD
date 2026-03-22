@@ -52,7 +52,7 @@
 ./mvnw test
 
 # 构建完成后，jar 包位于 target/ 目录
-java -jar target/NeoKeyManager-4.0.2.jar
+java -jar target/NeoKeyManager-X.X.X.jar
 ```
 
 ### 3. 启动

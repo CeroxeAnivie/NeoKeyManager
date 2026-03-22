@@ -1,11 +1,15 @@
 package neoproxy.neokeymanager.manager;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,7 +22,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class NodeAuthManager {
 
     private static final String AUTH_FILE = "NodeAuth.json";
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Gson GSON = new GsonBuilder()
+            .setPrettyPrinting()
+            .disableHtmlEscaping()
+            .create();
     private static NodeAuthManager INSTANCE = new NodeAuthManager();
 
     // Key: Lowercase Real NodeID, Value: NodeConfig
@@ -61,7 +68,7 @@ public class NodeAuthManager {
         // 3. 再次检查
         if (authMap.containsKey(key)) {
             NodeConfig config = authMap.get(key);
-            ServerLogger.info("NodeAuth", "nkm.node.hotLoaded", realNodeId, config.displayName);
+            ServerLogger.infoWithSource("NodeAuth", "nkm.node.hotLoaded", realNodeId, config.displayName);
             return config.displayName;
         }
 
@@ -99,7 +106,7 @@ public class NodeAuthManager {
      */
     public synchronized void addNodeToAllowlist(String realId, String displayName) {
         if (realId == null || realId.isBlank()) {
-            ServerLogger.warn("NodeAuth", "Cannot add node with null or blank realId");
+            ServerLogger.warnWithSource("NodeAuth", "nkm.error.invalidParam", "realId", "null or blank");
             return;
         }
         NodeConfig config = new NodeConfig(realId, displayName);
@@ -119,14 +126,13 @@ public class NodeAuthManager {
         String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
         File file = new File(authFilePath);
         if (!file.exists()) {
-            ServerLogger.warn("NodeAuth", authFilePath + " not found, allowlist is empty.");
+            // 文件不存在是正常情况，静默处理
             authMap.clear();
             displayNameToRealIdMap.clear();
             return;
         }
-        try {
-            Map<String, NodeConfig> loaded = MAPPER.readValue(file, new TypeReference<Map<String, NodeConfig>>() {
-            });
+        try (FileReader reader = new FileReader(file, StandardCharsets.UTF_8)) {
+            Map<String, NodeConfig> loaded = GSON.fromJson(reader, new TypeToken<Map<String, NodeConfig>>() {}.getType());
 
             authMap.clear();
             displayNameToRealIdMap.clear();
@@ -141,7 +147,7 @@ public class NodeAuthManager {
                 });
             }
         } catch (Exception e) {
-            ServerLogger.error("NodeAuth", "Failed to load NodeAuth.json. Clearing allowlist.", e);
+            ServerLogger.errorWithSource("NodeAuth", "nkm.error.jsonParse", e);
             authMap.clear();
             displayNameToRealIdMap.clear();
         }
@@ -153,9 +159,11 @@ public class NodeAuthManager {
     private synchronized void save() {
         try {
             String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
-            MAPPER.writerWithDefaultPrettyPrinter().writeValue(new File(authFilePath), authMap);
+            try (FileWriter writer = new FileWriter(authFilePath, StandardCharsets.UTF_8)) {
+                GSON.toJson(authMap, writer);
+            }
         } catch (IOException e) {
-            ServerLogger.error("NodeAuth", "Failed to save NodeAuth.json", e);
+            ServerLogger.errorWithSource("NodeAuth", "nkm.error.fileWrite", e);
         }
     }
 

@@ -21,8 +21,8 @@ class UtilsTest {
 
         String json = Utils.toJson(obj);
 
-        assertThat(json).contains("\"name\":\"test\"");
-        assertThat(json).contains("\"value\":123");
+        assertThat(json).contains("\"name\": \"test\"");
+        assertThat(json).contains("\"value\": 123");
     }
 
     @Test
@@ -281,7 +281,7 @@ class UtilsTest {
 
         String json = Utils.toJson(obj);
 
-        assertThat(json).contains("\"name\":\"test\"");
+        assertThat(json).contains("\"name\": \"test\"");
         assertThat(json).contains("\"nested\"");
     }
 

@@ -16,35 +16,27 @@
 
     <dependencies>
         <dependency>
-        <groupId>fun.ceroxe.api</groupId>
-        <artifactId>ceroxe-core</artifactId>
-        <version>0.2.5</version>
-    </dependency>
+            <groupId>fun.ceroxe.api</groupId>
+            <artifactId>ceroxe-core</artifactId>
+            <version>0.2.6</version>
+        </dependency>
         <!-- SQLite 驱动 (全平台 All-in-One) -->
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
             <version>3.45.2.0</version>
         </dependency>
+        <!-- BouncyCastle 只声明 bcpkix，bcprov 和 bcutil 会自动传递依赖 -->
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcpkix-jdk18on</artifactId>
             <version>1.79</version>
         </dependency>
+        <!-- Gson JSON 处理库 -->
         <dependency>
-            <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.78.1</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>2.17.0</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.datatype</groupId>
-            <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>2.17.0</version>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.13.2</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -91,7 +83,7 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <!-- 【核心修复】添加 filters 排除签名文件 -->
+                            <!-- 【核心修复】添加 filters 排除签名文件和重复模块信息 -->
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -99,6 +91,7 @@
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/versions/*/module-info.class</exclude>
                                     </excludes>
                                 </filter>
                             </filters>

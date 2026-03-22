@@ -1,8 +1,11 @@
 package neoproxy.neokeymanager;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -15,7 +18,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Map;
 
 /**
- * NeoKeyManager Ultimate Test Suite (V21 - Bulletproof Self-Setup Edition)
+ * NeoKeyManager Ultimate Test Suite (V22 - Gson Edition)
  */
 public class IntegrationTest {
 
@@ -24,7 +27,7 @@ public class IntegrationTest {
     private static final String CLIENT_TOKEN = "default_token";
 
     private static final HttpClient client = HttpClient.newHttpClient();
-    private static final ObjectMapper mapper = new ObjectMapper();
+    private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     // 状态备份与存在性标记
     private static boolean hadServerProps = false;
@@ -35,7 +38,7 @@ public class IntegrationTest {
 
     public static void main(String[] args) {
         System.out.println("==================================================");
-        System.out.println("   NeoKeyManager Ultimate Test Suite (V21)        ");
+        System.out.println("   NeoKeyManager Ultimate Test Suite (V22)        ");
         System.out.println("==================================================");
 
         try {
@@ -94,21 +97,22 @@ public class IntegrationTest {
     private static void setupEnvironment() throws Exception {
         // 自我注入测试所需的全部鉴权节点
         String authContent = Files.exists(Path.of("NodeAuth.json")) ? Files.readString(Path.of("NodeAuth.json")) : "{}";
-        ObjectNode root;
+        JsonObject root;
         try {
-            root = (ObjectNode) mapper.readTree(authContent);
-            if (root == null) root = mapper.createObjectNode();
+            root = JsonParser.parseString(authContent).getAsJsonObject();
+            if (root == null) root = new JsonObject();
         } catch (Exception e) {
-            root = mapper.createObjectNode();
+            root = new JsonObject();
         }
 
         String[] testNodes = {"N1", "NA", "NB", "NodeA", "NodeB", "NodeC"};
         for (String node : testNodes) {
-            root.set(node.toLowerCase(), mapper.createObjectNode()
-                    .put("realId", node)
-                    .put("displayName", "TestNode-" + node));
+            JsonObject nodeObj = new JsonObject();
+            nodeObj.addProperty("realId", node);
+            nodeObj.addProperty("displayName", "TestNode-" + node);
+            root.add(node.toLowerCase(), nodeObj);
         }
-        Files.writeString(Path.of("NodeAuth.json"), mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+        Files.writeString(Path.of("NodeAuth.json"), gson.toJson(root));
 
         // 强迫服务器加载新环境
         execAdmin("reload");
@@ -209,7 +213,7 @@ public class IntegrationTest {
         postNps("/api/sync", "{ \"traffic\": { \"test_alias\": 10 } }");
         System.out.println("      Waiting 5.5s for async DB flush (Traffic Buffer)...");
         Thread.sleep(5500);
-        double bal = getAdmin("/api/lp/test_key").get("data").get("balance").asDouble();
+        double bal = getAdmin("/api/lp/test_key").get("data").getAsJsonObject().get("balance").getAsDouble();
         if (Math.abs(bal - 90.0) > 0.01) throw new RuntimeException("Deduction failed. Expected 90, got " + bal);
         System.out.println("   -> Balance Deduction [OK]");
     }
@@ -299,11 +303,12 @@ public class IntegrationTest {
         setServerProperty("NODE_JSON_FILE", "test_public_nodes.json");
 
         String authContent = Files.exists(Path.of("NodeAuth.json")) ? Files.readString(Path.of("NodeAuth.json")) : "{}";
-        ObjectNode root = (ObjectNode) mapper.readTree(authContent);
-        root.set("test_mock_node", mapper.createObjectNode()
-                .put("realId", "test_mock_node")
-                .put("displayName", "测试自动节点"));
-        Files.writeString(Path.of("NodeAuth.json"), mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+        JsonObject root = JsonParser.parseString(authContent).getAsJsonObject();
+        JsonObject nodeObj = new JsonObject();
+        nodeObj.addProperty("realId", "test_mock_node");
+        nodeObj.addProperty("displayName", "测试自动节点");
+        root.add("test_mock_node", nodeObj);
+        Files.writeString(Path.of("NodeAuth.json"), gson.toJson(root));
 
         client.send(request, HttpResponse.BodyHandlers.ofString());
         System.out.println("      Waiting 3.5s for server to enable node list...");
@@ -312,7 +317,7 @@ public class IntegrationTest {
         var respOffline = getPublicWithIp("/client/nodelist", "10.0.0.2");
         if (respOffline.statusCode() != 200)
             throw new RuntimeException("Expected 200, got " + respOffline.statusCode());
-        JsonNode arrOffline = mapper.readTree(respOffline.body());
+        JsonArray arrOffline = JsonParser.parseString(respOffline.body()).getAsJsonArray();
         if (arrOffline.size() != 0) {
             throw new RuntimeException("Node should be hidden when offline.");
         }
@@ -320,8 +325,8 @@ public class IntegrationTest {
 
         postNps("/api/node/status", "{ \"nodeId\": \"test_mock_node\", \"activeTunnels\": 5 }");
         var respOnline = getPublicWithIp("/client/nodelist", "10.0.0.3");
-        JsonNode arrOnline = mapper.readTree(respOnline.body());
-        if (arrOnline.size() != 1 || !"测试自动节点".equals(arrOnline.get(0).get("name").asText())) {
+        JsonArray arrOnline = JsonParser.parseString(respOnline.body()).getAsJsonArray();
+        if (arrOnline.size() != 1 || !"测试自动节点".equals(arrOnline.get(0).getAsJsonObject().get("name").getAsString())) {
             throw new RuntimeException("Node should appear online after status report!");
         }
         System.out.println("   -> Online Node Appearance [OK]");
@@ -348,26 +353,28 @@ public class IntegrationTest {
         postNps("/api/node/status", "{ \"nodeId\": \"NodeC\", \"activeTunnels\": 0 }");
 
         // 2. 调用 /api/nodestatus 接口
-        JsonNode resp = getAdmin("/api/nodestatus");
-        if (!resp.get("success").asBoolean()) {
-            throw new RuntimeException("Node status API failed: " + resp.get("message").asText());
+        JsonObject resp = getAdmin("/api/nodestatus");
+        if (!resp.get("success").getAsBoolean()) {
+            throw new RuntimeException("Node status API failed: " + resp.get("message").getAsString());
         }
 
-        JsonNode data = resp.get("data");
-        if (!data.isArray() || data.size() == 0) {
+        JsonElement dataElem = resp.get("data");
+        if (dataElem == null || !dataElem.isJsonArray() || dataElem.getAsJsonArray().size() == 0) {
             throw new RuntimeException("Node status API returned empty or invalid data array.");
         }
+        JsonArray data = dataElem.getAsJsonArray();
 
         boolean nodeCOnlineFound = false;
         boolean structureValid = false;
 
         // 3. 验证返回的数据结构与刚才设置的状态
-        for (JsonNode node : data) {
+        for (JsonElement elem : data) {
+            JsonObject node = elem.getAsJsonObject();
             if (node.has("realId") && node.has("displayName") && node.has("isOnline")) {
                 structureValid = true;
             }
-            if ("nodec".equalsIgnoreCase(node.get("realId").asText())) {
-                if (node.get("isOnline").asBoolean()) {
+            if ("nodec".equalsIgnoreCase(node.get("realId").getAsString())) {
+                if (node.get("isOnline").getAsBoolean()) {
                     nodeCOnlineFound = true;
                 }
             }
@@ -391,7 +398,7 @@ public class IntegrationTest {
         }
     }
 
-    private static JsonNode execAdmin(String cmd, String... args) throws Exception {
+    private static JsonObject execAdmin(String cmd, String... args) throws Exception {
         if (cmd.equals("reload")) {
             var request = HttpRequest.newBuilder(URI.create(BASE_URL + "/api/reload"))
                     .header("Authorization", "Bearer " + ADMIN_TOKEN)
@@ -400,18 +407,19 @@ public class IntegrationTest {
             return null;
         }
         var payload = Map.of("args", args);
-        var jsonBody = mapper.writeValueAsString(payload);
+        var jsonBody = gson.toJson(payload);
         var request = HttpRequest.newBuilder(URI.create(BASE_URL + "/api/exec/" + cmd))
                 .header("Authorization", "Bearer " + ADMIN_TOKEN)
                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody)).build();
         var resp = client.send(request, HttpResponse.BodyHandlers.ofString());
-        return mapper.readTree(resp.body());
+        return JsonParser.parseString(resp.body()).getAsJsonObject();
     }
 
-    private static JsonNode getAdmin(String path) throws Exception {
+    private static JsonObject getAdmin(String path) throws Exception {
         var request = HttpRequest.newBuilder(URI.create(BASE_URL + path))
                 .header("Authorization", "Bearer " + ADMIN_TOKEN).GET().build();
-        return mapper.readTree(client.send(request, HttpResponse.BodyHandlers.ofString()).body());
+        String body = client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+        return JsonParser.parseString(body).getAsJsonObject();
     }
 
     private static HttpResponse<String> getNps(String uri) throws Exception {
@@ -427,16 +435,17 @@ public class IntegrationTest {
         return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
-    private static JsonNode postNps(String uri, String json) throws Exception {
+    private static JsonObject postNps(String uri, String json) throws Exception {
         var request = HttpRequest.newBuilder(URI.create(BASE_URL + uri))
                 .header("Authorization", "Bearer " + CLIENT_TOKEN)
                 .POST(HttpRequest.BodyPublishers.ofString(json)).build();
-        return mapper.readTree(client.send(request, HttpResponse.BodyHandlers.ofString()).body());
+        String body = client.send(request, HttpResponse.BodyHandlers.ofString()).body();
+        return JsonParser.parseString(body).getAsJsonObject();
     }
 
-    private static void assertSuccess(JsonNode json, String msg) {
-        if (json == null || !json.path("success").asBoolean()) {
-            String err = json != null ? json.path("message").asText() : "Empty Response";
+    private static void assertSuccess(JsonObject json, String msg) {
+        if (json == null || !json.has("success") || !json.get("success").getAsBoolean()) {
+            String err = json != null && json.has("message") ? json.get("message").getAsString() : "Empty Response";
             throw new RuntimeException(msg + " FAILED: " + err);
         }
     }

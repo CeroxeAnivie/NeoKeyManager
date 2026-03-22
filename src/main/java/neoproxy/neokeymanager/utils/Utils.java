@@ -1,15 +1,15 @@
 package neoproxy.neokeymanager.utils;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -18,28 +18,26 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 工业级工具类：集成 Jackson JSON 处理与原有参数解析逻辑
+ * 工业级工具类：集成 Gson JSON 处理与原有参数解析逻辑
  * 职责：单一职责，处理所有序列化与字符串操作
  */
 public class Utils {
 
-    // ==================== JSON Logic (Jackson) ====================
-    private static final ObjectMapper MAPPER;
+    // ==================== JSON Logic (Gson) ====================
+    private static final Gson GSON;
     private static final Pattern PORT_RANGE_PATTERN = Pattern.compile("^(\\d+)(?:-(\\d+))?$");
 
     static {
-        MAPPER = new ObjectMapper();
-        MAPPER.registerModule(new JavaTimeModule()); // 支持 LocalDateTime
-        // 忽略未知的 JSON 字段，保证向后兼容性
-        MAPPER.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        // 允许序列化空对象，防止报错
-        MAPPER.configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false);
+        GSON = new GsonBuilder()
+                .setPrettyPrinting()
+                .disableHtmlEscaping()
+                .create();
     }
 
     public static String toJson(Object object) {
         try {
-            return MAPPER.writeValueAsString(object);
-        } catch (JsonProcessingException e) {
+            return GSON.toJson(object);
+        } catch (Exception e) {
             ServerLogger.error("Utils", "nkm.error.jsonSerialize", e);
             return "{\"error\":\"JSON_ERROR\"}";
         }
@@ -48,15 +46,17 @@ public class Utils {
     public static <T> T parseJson(String json, Class<T> clazz) {
         if (json == null || json.isBlank()) return null;
         try {
-            return MAPPER.readValue(json, clazz);
-        } catch (JsonProcessingException e) {
+            return GSON.fromJson(json, clazz);
+        } catch (Exception e) {
             ServerLogger.error("Utils", "nkm.error.jsonParse", e);
             return null;
         }
     }
 
     public static <T> T parseJson(InputStream is, Class<T> clazz) throws IOException {
-        return MAPPER.readValue(is, clazz);
+        try (InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+            return GSON.fromJson(reader, clazz);
+        }
     }
 
     // ==================== Param & Port Logic ====================
@@ -65,12 +65,14 @@ public class Utils {
      * 专门解析流量同步数据，兼容不同格式
      */
     public static Map<String, Double> parseTrafficMap(InputStream is) {
-        try {
-            JsonNode root = MAPPER.readTree(is);
+        try (InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+            JsonElement root = JsonParser.parseReader(reader);
+            JsonObject rootObj = root.getAsJsonObject();
+
             // 兼容 {"key": 10} 和 {"traffic": {"key": 10}}
-            JsonNode trafficNode = root.has("traffic") ? root.get("traffic") : root;
-            return MAPPER.convertValue(trafficNode, new TypeReference<Map<String, Double>>() {
-            });
+            JsonElement trafficElement = rootObj.has("traffic") ? rootObj.get("traffic") : rootObj;
+
+            return GSON.fromJson(trafficElement, new TypeToken<Map<String, Double>>() {}.getType());
         } catch (Exception e) {
             return Map.of();
         }
@@ -98,20 +100,23 @@ public class Utils {
         if (m.matches()) {
             try {
                 int start = Integer.parseInt(m.group(1));
-                if (m.group(2) != null) {
-                    int end = Integer.parseInt(m.group(2));
-                    return Math.max(0, end - start + 1);
-                }
-                return 1;
-            } catch (NumberFormatException ignored) {
+                int end = m.group(2) != null ? Integer.parseInt(m.group(2)) : start;
+                return end - start + 1;
+            } catch (NumberFormatException e) {
+                return 0;
             }
         }
         return 0;
     }
 
+    /**
+     * 检查是否为动态端口（auto 或 AUTO）
+     *
+     * @param port 端口字符串
+     * @return 如果是动态端口返回 true，否则返回 false
+     */
     public static boolean isDynamicPort(String port) {
         if (port == null || port.isBlank()) return false;
-        // "auto" 或 "AUTO" 等表示动态端口分配
-        return port.equalsIgnoreCase("auto");
+        return "auto".equalsIgnoreCase(port.trim());
     }
 }
