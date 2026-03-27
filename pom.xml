@@ -6,7 +6,7 @@
 
     <groupId>neoproxy.neokeymanager</groupId>
     <artifactId>NeoKeyManager</artifactId>
-    <version>4.0.2</version>
+    <version>4.0.4</version>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -99,7 +99,7 @@
                             <transformers>
                                 <transformer
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>neoproxy.neokeymanager.Main</mainClass>
+                                    <mainClass>neoproxy.neokeymanager.Application</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>

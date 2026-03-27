@@ -2,7 +2,7 @@ package neoproxy.neokeymanager.handler;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
-import neoproxy.neokeymanager.Main;
+import neoproxy.neokeymanager.Application;
 import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
 import neoproxy.neokeymanager.manager.NodeAuthManager;
@@ -59,7 +59,7 @@ public class AdminHandler implements HttpHandler {
                 handleLookup(exchange, path);
             } else if (path.equals("/api/reload") && ("POST".equals(method) || "GET".equals(method))) {
                 // S-Level Add: 允许通过 API 重载系统配置
-                Main.handleReload();
+                Application.handleReload();
                 sendJson(exchange, 200, new AdminResponse(true, "System Reloaded", null));
             } else if (path.equals("/api/nodestatus") && "GET".equals(method)) {
                 // [新增] 路由: 获得所有的每个节点是否在线的状态

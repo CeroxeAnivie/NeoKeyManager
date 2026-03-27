@@ -1,6 +1,6 @@
 package neoproxy.neokeymanager.utils;
 
-import neoproxy.neokeymanager.Main;
+import neoproxy.neokeymanager.Application;
 
 import java.text.MessageFormat;
 import java.util.Locale;
@@ -86,8 +86,8 @@ public class ServerLogger {
 
     public static void error(String source, String key, Throwable e, Object... args) {
         String message = getMessage(key, args);
-        if (Main.myConsole != null) {
-            Main.myConsole.error(source, message, e);
+        if (Application.myConsole != null) {
+            Application.myConsole.error(source, message, e);
         } else {
             System.err.println("[" + source + "] " + message);
             // 在测试模式下不打印异常堆栈，保持测试输出整洁
@@ -105,11 +105,11 @@ public class ServerLogger {
     // ==================== INTERNAL ====================
     private static void log(String level, String source, String key, Object... args) {
         String message = getMessage(key, args);
-        if (Main.myConsole != null) {
+        if (Application.myConsole != null) {
             switch (level) {
-                case "WARN" -> Main.myConsole.warn(source, message);
-                case "ERROR" -> Main.myConsole.error(source, message);
-                default -> Main.myConsole.log(source, message);
+                case "WARN" -> Application.myConsole.warn(source, message);
+                case "ERROR" -> Application.myConsole.error(source, message);
+                default -> Application.myConsole.log(source, message);
             }
         } else {
             // Fallback before console init

@@ -1,0 +1,334 @@
+package neoproxy.neokeymanager;
+
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
+import fun.ceroxe.api.utils.MyConsole;
+import neoproxy.neokeymanager.cli.CommandRegistry;
+import neoproxy.neokeymanager.config.Config;
+import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.handler.AdminHandler;
+import neoproxy.neokeymanager.handler.ClientHandler;
+import neoproxy.neokeymanager.handler.KeyHandler;
+import neoproxy.neokeymanager.manager.NodeAuthManager;
+import neoproxy.neokeymanager.manager.NodeManager;
+import neoproxy.neokeymanager.manager.SessionManager;
+import neoproxy.neokeymanager.service.KeyService;
+import neoproxy.neokeymanager.utils.ServerLogger;
+import neoproxy.neokeymanager.utils.SslFactory;
+
+import javax.net.ssl.SSLContext;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.Executors;
+
+/**
+ * NeoKeyManager 应用程序主类
+ */
+public class Application {
+    private static final KeyService keyService = new KeyService();
+    public static MyConsole myConsole;
+    private static HttpServer httpServer;
+    private static CommandRegistry commandRegistry;
+
+    public static void main(String[] args) throws IOException {
+        myConsole = new MyConsole("NeoKeyManager");
+        myConsole.printWelcome = false;
+        checkARGS(args);
+
+        try {
+            Config.load();
+            myConsole.log("NeoKeyManager", "\n" + getBanner());
+            ServerLogger.infoWithSource("System", "nkm.system.init");
+            Database.init();
+            commandRegistry = new CommandRegistry(myConsole, keyService);
+            startWebServer();
+            myConsole.start();
+        } catch (Exception e) {
+            ServerLogger.error("System", "nkm.error.startupFail", e);
+            System.exit(1);
+        }
+    }
+
+    private static String getBanner() {
+        return """
+               
+                  _____                                   
+                 / ____|                                  
+                | |        ___   _ __    ___   __  __   ___
+                | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
+                | |____  |  __/ | |    | (_) |  >  <  |  __/
+                 \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
+                                                           
+               """;
+    }
+
+    private static void checkARGS(String[] args) {
+        for (String arg : args) {
+            switch (arg) {
+                case "--zh-cn" -> ServerLogger.setLocale(Locale.SIMPLIFIED_CHINESE);
+                case "--en-us" -> ServerLogger.setLocale(Locale.US);
+            }
+        }
+    }
+
+    public static void handleReload() {
+        new Thread(() -> {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException ignored) {
+            }
+            ServerLogger.infoWithSource("System", "nkm.info.reloading");
+
+            // 1. 重载配置文件
+            Config.load();
+            // 2. 重载节点鉴权白名单
+            NodeAuthManager.getInstance().load();
+            // 3. 热重载公开节点列表 (node.json)
+            NodeManager.getInstance().loadNodeJson();
+            // 4. 重启 Web 服务
+            startWebServer();
+
+            ServerLogger.infoWithSource("System", "nkm.info.reloadComplete");
+        }, "NKM-Reloader").start();
+    }
+
+    private static void startWebServer() {
+        stopWebServer();
+        boolean sslSuccess = false;
+
+        if (Config.SSL_CRT_PATH != null && Config.SSL_KEY_PATH != null) {
+            try {
+                SSLContext sslContext = SslFactory.createSSLContext(Config.SSL_CRT_PATH, Config.SSL_KEY_PATH);
+                HttpsServer httpsServer = HttpsServer.create(new InetSocketAddress(Config.PORT), 0);
+                httpsServer.setHttpsConfigurator(new HttpsConfigurator(sslContext));
+                httpServer = httpsServer;
+                sslSuccess = true;
+                ServerLogger.infoWithSource("System", "nkm.system.startedHttps", Config.PORT);
+            } catch (Exception e) {
+                ServerLogger.error("System", "nkm.system.sslFail", e);
+            }
+        }
+
+        if (!sslSuccess) {
+            try {
+                httpServer = HttpServer.create(new InetSocketAddress(Config.PORT), 0);
+                ServerLogger.infoWithSource("System", "nkm.system.startedHttp", Config.PORT);
+            } catch (IOException e) {
+                ServerLogger.error("System", "nkm.system.bindFail", e, Config.PORT);
+            }
+        }
+
+        if (httpServer != null) {
+            AdminHandler adminHandler = new AdminHandler();
+            ClientHandler clientHandler = new ClientHandler();
+
+            // 为所有 API 路径注册 Handler
+            httpServer.createContext("/api/exec", adminHandler);
+            httpServer.createContext("/api/query", adminHandler);
+            httpServer.createContext("/api/querynomap", adminHandler);
+            httpServer.createContext("/api/lp", adminHandler);
+            httpServer.createContext("/api/lpnomap", adminHandler);
+            httpServer.createContext("/api/reload", adminHandler);
+            httpServer.createContext("/api/nodestatus", adminHandler);
+
+            httpServer.createContext("/api", new KeyHandler());
+
+            // 【核心修复】注册独立的外部无鉴权路由
+            httpServer.createContext("/client", clientHandler);
+
+            httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+            httpServer.start();
+        }
+    }
+
+    private static void stopWebServer() {
+        if (httpServer != null) {
+            httpServer.stop(1);
+            httpServer = null;
+        }
+    }
+
+    // ==================== 命令处理委托方法 ====================
+
+    public static void handleTopLevelList() {
+        SessionManager sm = SessionManager.getInstance();
+        Map<String, Map<String, String>> activeSessions = sm.getActiveSessionsSnapshot();
+        if (activeSessions.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
+            return;
+        }
+
+        // Pre-filter invalid nodes out of the snapshot list
+        Map<String, Map<String, String>> filteredSessions = new java.util.HashMap<>();
+        for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
+            Map<String, String> validNodes = new java.util.HashMap<>();
+            for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
+                if (NodeAuthManager.getInstance().isNodeExplicitlyRegistered(nodeEntry.getKey())) {
+                    validNodes.put(nodeEntry.getKey(), nodeEntry.getValue());
+                }
+            }
+            if (!validNodes.isEmpty()) {
+                filteredSessions.put(entry.getKey(), validNodes);
+            }
+        }
+
+        if (filteredSessions.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noActiveSessions");
+            return;
+        }
+
+        int maxNameLen = 16, maxNodeLen = 15, maxPortLen = 6;
+        Map<String, String> displayNames = new java.util.HashMap<>();
+        Map<String, String> occupancyMap = new java.util.HashMap<>();
+
+        for (Map.Entry<String, Map<String, String>> entry : filteredSessions.entrySet()) {
+            String displayKey = entry.getKey();
+            String realKey = Database.getRealKeyName(displayKey);
+            String showName = displayKey;
+            if (realKey != null && !displayKey.equals(realKey)) showName = displayKey + " -> " + realKey;
+            displayNames.put(displayKey, showName);
+            maxNameLen = Math.max(maxNameLen, showName.length());
+            Map<String, Object> dbInfo = (realKey != null) ? Database.getKeyPortInfo(realKey) : null;
+            int maxConns = (dbInfo != null && dbInfo.containsKey("max_conns")) ? (int) dbInfo.get("max_conns") : 0;
+            int currentConns = (realKey != null) ? sm.getActiveCount(realKey) : 0;
+            occupancyMap.put(displayKey, currentConns + " / " + maxConns);
+
+            for (Map.Entry<String, String> nodeEntry : entry.getValue().entrySet()) {
+                String realNodeId = nodeEntry.getKey();
+                String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
+                maxNodeLen = Math.max(maxNodeLen, alias.length());
+                maxPortLen = Math.max(maxPortLen, nodeEntry.getValue().length());
+            }
+        }
+        maxNameLen += 2;
+        maxNodeLen += 2;
+        maxPortLen += 2;
+        String headerFmt = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtKey = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        String rowFmtSub = "   %-" + maxNameLen + "s %-12s %-" + maxNodeLen + "s %-" + maxPortLen + "s";
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n");
+        int totalWidth = 3 + maxNameLen + 1 + 12 + 1 + maxNodeLen + 1 + maxPortLen;
+        String separator = "-".repeat(totalWidth);
+        sb.append(separator).append("\n");
+        sb.append(String.format(headerFmt, "SESSION (Link->Real)", "OCCUPANCY", "NODE", "PORT (DETAIL)")).append("\n");
+        sb.append(separator).append("\n");
+        for (Map.Entry<String, Map<String, String>> entry : filteredSessions.entrySet()) {
+            String displayKey = entry.getKey();
+            String showName = displayNames.get(displayKey);
+            String usage = occupancyMap.get(displayKey);
+            Map<String, String> nodes = entry.getValue();
+            boolean isFirstNode = true;
+            for (Map.Entry<String, String> nodeEntry : nodes.entrySet()) {
+                String realNodeId = nodeEntry.getKey();
+                String alias = NodeAuthManager.getInstance().getAlias(realNodeId);
+                String portString = nodeEntry.getValue();
+                if (isFirstNode) {
+                    sb.append(String.format(rowFmtKey, showName, usage, alias, portString)).append("\n");
+                    isFirstNode = false;
+                } else {
+                    sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
+                }
+            }
+        }
+        sb.append(separator);
+        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
+    }
+
+    public static void handleListKeys(List<String> args) {
+        if (args.contains("active")) {
+            handleTopLevelList();
+            return;
+        }
+        boolean noMap = args.contains("nomap");
+        printKeyTable(null, noMap);
+    }
+
+    public static void handleLookupKey(List<String> args) {
+        if (args.size() != 1) {
+            ServerLogger.warnWithSource("Usage", "nkm.usage.lp");
+            return;
+        }
+        String targetKey = args.get(0);
+        String realName = Database.getRealKeyName(targetKey);
+        if (realName == null) {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
+            return;
+        }
+        printKeyTable(realName, false);
+    }
+
+    private static void printKeyTable(String targetKeyFilter, boolean noMap) {
+        List<Map<String, String>> rows = Database.getAllKeysRaw();
+        if (rows.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
+            return;
+        }
+        if (targetKeyFilter != null) {
+            List<Map<String, String>> filtered = new ArrayList<>();
+            for (Map<String, String> row : rows) {
+                if ("KEY".equals(row.get("type")) && targetKeyFilter.equals(row.get("name"))) {
+                    filtered.add(row);
+                } else if ("MAP".equals(row.get("type")) && targetKeyFilter.equals(row.get("parent_key"))) {
+                    filtered.add(row);
+                }
+            }
+            rows = filtered;
+            if (rows.isEmpty()) {
+                ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
+                return;
+            }
+        }
+        int maxNameLen = 10;
+        for (Map<String, String> row : rows) {
+            String n = row.get("name");
+            if (n != null) maxNameLen = Math.max(maxNameLen, n.length());
+        }
+        maxNameLen += 2;
+        String headerFmt, rowFmt;
+        if (noMap) {
+            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+        } else {
+            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n");
+        String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90));
+        sb.append(separator).append("\n");
+        if (noMap) {
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
+        } else {
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
+        }
+        sb.append(separator).append("\n");
+        for (Map<String, String> row : rows) {
+            if ("KEY".equals(row.get("type"))) {
+                String mapCount = row.getOrDefault("map_count", "0");
+                if (noMap) {
+                    sb.append(String.format(rowFmt,
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web"), mapCount
+                    )).append("\n");
+                } else {
+                    sb.append(String.format(rowFmt,
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web")
+                    )).append("\n");
+                }
+            } else if ("MAP".equals(row.get("type"))) {
+                if (noMap) continue;
+                String mapIndent = "   " + " ".repeat(25) + " ".repeat(maxNameLen);
+                sb.append(mapIndent).append(row.get("map_str")).append("\n");
+            }
+        }
+        sb.append(separator);
+        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
+    }
+}

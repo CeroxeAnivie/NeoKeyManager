@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>neoproxy.neokeymanager</groupId>
   <artifactId>NeoKeyManager</artifactId>
-  <version>4.0.2</version>
+  <version>4.0.4</version>
   <build>
     <plugins>
       <plugin>
@@ -23,12 +23,13 @@
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
                     <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/versions/*/module-info.class</exclude>
                   </excludes>
                 </filter>
               </filters>
               <transformers>
                 <transformer>
-                  <mainClass>neoproxy.neokeymanager.Main</mainClass>
+                  <mainClass>neoproxy.neokeymanager.Application</mainClass>
                 </transformer>
               </transformers>
             </configuration>
@@ -91,6 +92,10 @@
       <scope>test</scope>
       <exclusions>
         <exclusion>
+          <artifactId>byte-buddy</artifactId>
+          <groupId>net.bytebuddy</groupId>
+        </exclusion>
+        <exclusion>
           <artifactId>byte-buddy-agent</artifactId>
           <groupId>net.bytebuddy</groupId>
         </exclusion>
@@ -117,6 +122,12 @@
       <artifactId>assertj-core</artifactId>
       <version>3.25.3</version>
       <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <artifactId>byte-buddy</artifactId>
+          <groupId>net.bytebuddy</groupId>
+        </exclusion>
+      </exclusions>
     </dependency>
   </dependencies>
   <properties>
