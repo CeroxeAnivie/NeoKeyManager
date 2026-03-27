@@ -56,9 +56,9 @@ public class CommandRegistry {
             args -> handleReload()
         );
 
-        // stop 命令
-        registerCommand("stop",
-            ServerLogger.getMessage("nkm.cmd.desc.stop"),
+        // exit 命令
+        registerCommand("exit",
+            ServerLogger.getMessage("nkm.cmd.desc.exit"),
             args -> System.exit(0)
         );
 
@@ -151,7 +151,6 @@ public class CommandRegistry {
             return;
         }
 
-        console.log("Help", "\n" + getBanner());
         console.log("Help", ServerLogger.getMessage("nkm.help.title"));
         console.log("Help", "-".repeat(50));
 
@@ -172,7 +171,7 @@ public class CommandRegistry {
             case "web" -> printWebHelp();
             case "list" -> console.log("Help", ServerLogger.getMessage("nkm.usage.help.listActive"));
             case "reload" -> console.log("Help", ServerLogger.getMessage("nkm.cmd.desc.reload"));
-            case "stop" -> console.log("Help", ServerLogger.getMessage("nkm.cmd.desc.stop"));
+            case "exit" -> console.log("Help", ServerLogger.getMessage("nkm.cmd.desc.exit"));
             default -> console.log("Help", ServerLogger.getMessage("nkm.error.unknownSubCommand", commandName));
         }
     }
@@ -194,7 +193,15 @@ public class CommandRegistry {
         console.log("Help", ServerLogger.getMessage("nkm.usage.help.toggle"));
         console.log("Help", ServerLogger.getMessage("nkm.usage.help.web"));
         console.log("Help", ServerLogger.getMessage("nkm.usage.help.link"));
-        console.log("Help", ServerLogger.getMessage("nkm.usage.cbm"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.setconn"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.setsingle"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.delsingle"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.listsingle"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.delnode"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.listlink"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.setcbm"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.delcbm"));
+        console.log("Help", ServerLogger.getMessage("nkm.usage.help.listcbm"));
 
         console.log("Help", "-".repeat(50));
         console.log("Help", ServerLogger.getMessage("nkm.usage.portNote"));
@@ -205,18 +212,6 @@ public class CommandRegistry {
      */
     private void printWebHelp() {
         console.log("Help", ServerLogger.getMessage("nkm.usage.web"));
-    }
-
-    private String getBanner() {
-        return """
-                   _____                                    
-                  / ____|                                   
-                 | |        ___   _ __    ___   __  __   ___
-                 | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
-                 | |____  |  __/ | |    | (_) |  >  <  |  __/
-                  \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
-                                                            
-                """;
     }
 
     // ==================== 命令处理委托 ====================
