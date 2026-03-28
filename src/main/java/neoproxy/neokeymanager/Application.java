@@ -292,11 +292,11 @@ public class Application {
         maxNameLen += 2;
         String headerFmt, rowFmt;
         if (noMap) {
-            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
-            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+            headerFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+            rowFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
         } else {
-            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
-            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+            headerFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+            rowFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
         }
         StringBuilder sb = new StringBuilder();
         sb.append("\n");
@@ -324,7 +324,7 @@ public class Application {
                 }
             } else if ("MAP".equals(row.get("type"))) {
                 if (noMap) continue;
-                String mapIndent = "   " + " ".repeat(25) + " ".repeat(maxNameLen);
+                String mapIndent = "   " + " ".repeat(7) + " ".repeat(maxNameLen);
                 sb.append(mapIndent).append(row.get("map_str")).append("\n");
             }
         }
