@@ -20,6 +20,16 @@ public class Config {
     // [新增] 公开节点列表配置文件路径
     public static String NODE_JSON_FILE = "";
 
+    // [安全增强] CORS 配置
+    public static String CORS_ALLOWED_ORIGINS = "*";
+    public static boolean CORS_ALLOW_CREDENTIALS = false;
+
+    // [安全增强] API 签名密钥（用于请求签名验证，为空时禁用签名验证）
+    public static String API_SECRET = "";
+
+    // [安全增强] 是否启用请求签名验证（默认禁用，保持向后兼容）
+    public static boolean ENABLE_SIGNATURE_VERIFY = false;
+
     public static void load() {
         File configFile = new File("server.properties");
         if (!configFile.exists()) {
@@ -70,6 +80,23 @@ public class Config {
                 SSL_CRT_PATH = null;
                 SSL_KEY_PATH = null;
             }
+
+            // [安全增强] 读取 CORS 配置
+            String corsOrigins = props.getProperty("CORS_ALLOWED_ORIGINS");
+            if (corsOrigins != null) CORS_ALLOWED_ORIGINS = corsOrigins.trim();
+
+            String corsCreds = props.getProperty("CORS_ALLOW_CREDENTIALS");
+            if (corsCreds != null) {
+                CORS_ALLOW_CREDENTIALS = Boolean.parseBoolean(corsCreds.trim());
+            }
+
+            // [安全增强] 读取 API 签名密钥
+            String apiSecret = props.getProperty("API_SECRET");
+            if (apiSecret != null) API_SECRET = apiSecret.trim();
+
+            // [安全增强] 读取是否启用签名验证
+            String enableSig = props.getProperty("ENABLE_SIGNATURE_VERIFY");
+            if (enableSig != null) ENABLE_SIGNATURE_VERIFY = Boolean.parseBoolean(enableSig.trim());
         } catch (IOException e) {
             System.err.println("[Config] Critical Error loading server.properties: " + e.getMessage());
         }
@@ -90,9 +117,9 @@ public class Config {
 
     private static void extractDefaultConfig(File targetFile) {
         System.out.println("[Config] 'server.properties' not found. Extracting default from resources...");
-        try (InputStream is = Config.class.getResourceAsStream("/server.properties")) {
+        try (InputStream is = Config.class.getResourceAsStream("/templates/server.properties")) {
             if (is == null) {
-                System.err.println("[Config] CRITICAL: '/server.properties' NOT FOUND in JAR resources!");
+                System.err.println("[Config] CRITICAL: '/templates/server.properties' NOT FOUND in JAR resources!");
                 return;
             }
             Files.copy(is, targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
@@ -117,5 +144,9 @@ public class Config {
         CLIENT_UPDATE_URL_JAR = "";
         DEFAULT_NODE = "";
         NODE_JSON_FILE = "";
+        CORS_ALLOWED_ORIGINS = "*";
+        CORS_ALLOW_CREDENTIALS = false;
+        API_SECRET = "";
+        ENABLE_SIGNATURE_VERIFY = false;
     }
 }

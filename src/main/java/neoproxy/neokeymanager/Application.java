@@ -9,6 +9,8 @@ import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
 import neoproxy.neokeymanager.handler.AdminHandler;
 import neoproxy.neokeymanager.handler.ClientHandler;
+import neoproxy.neokeymanager.handler.CorsFilter;
+import neoproxy.neokeymanager.handler.CorsHandlerWrapper;
 import neoproxy.neokeymanager.handler.KeyHandler;
 import neoproxy.neokeymanager.manager.NodeAuthManager;
 import neoproxy.neokeymanager.manager.NodeManager;
@@ -126,20 +128,24 @@ public class Application {
         if (httpServer != null) {
             AdminHandler adminHandler = new AdminHandler();
             ClientHandler clientHandler = new ClientHandler();
+            KeyHandler keyHandler = new KeyHandler();
 
-            // 为所有 API 路径注册 Handler
-            httpServer.createContext("/api/exec", adminHandler);
-            httpServer.createContext("/api/query", adminHandler);
-            httpServer.createContext("/api/querynomap", adminHandler);
-            httpServer.createContext("/api/lp", adminHandler);
-            httpServer.createContext("/api/lpnomap", adminHandler);
-            httpServer.createContext("/api/reload", adminHandler);
-            httpServer.createContext("/api/nodestatus", adminHandler);
+            // [安全增强] 创建 CORS Filter
+            CorsFilter corsFilter = new CorsFilter(Config.CORS_ALLOWED_ORIGINS, Config.CORS_ALLOW_CREDENTIALS);
 
-            httpServer.createContext("/api", new KeyHandler());
+            // 为所有 API 路径注册 Handler，并添加 CORS Filter
+            httpServer.createContext("/api/exec", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/query", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/querynomap", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/lp", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/lpnomap", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/reload", new CorsHandlerWrapper(adminHandler, corsFilter));
+            httpServer.createContext("/api/nodestatus", new CorsHandlerWrapper(adminHandler, corsFilter));
 
-            // 【核心修复】注册独立的外部无鉴权路由
-            httpServer.createContext("/client", clientHandler);
+            httpServer.createContext("/api", new CorsHandlerWrapper(keyHandler, corsFilter));
+
+            // 【核心修复】注册独立的外部无鉴权路由，添加 CORS Filter
+            httpServer.createContext("/client", new CorsHandlerWrapper(clientHandler, corsFilter));
 
             httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             httpServer.start();

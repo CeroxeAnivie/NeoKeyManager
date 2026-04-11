@@ -228,7 +228,7 @@ public class Database {
         if (snapshot.isEmpty()) return;
 
         String sqlDeduct = "UPDATE keys SET balance = balance - ? WHERE name = ?";
-        String sqlCheckPause = "UPDATE keys SET status = '" + STATUS_PAUSED + "' WHERE name = ? AND balance <= 0 AND status = '" + STATUS_ENABLED + "'";
+        String sqlCheckPause = "UPDATE keys SET status = ? WHERE name = ? AND balance <= 0 AND status = ?";
 
         try (Connection conn = getConnection()) {
             conn.setAutoCommit(false);
@@ -242,7 +242,9 @@ public class Database {
             }
             try (PreparedStatement stmt = conn.prepareStatement(sqlCheckPause)) {
                 for (String key : snapshot.keySet()) {
-                    stmt.setString(1, key);
+                    stmt.setString(1, STATUS_PAUSED);
+                    stmt.setString(2, key);
+                    stmt.setString(3, STATUS_ENABLED);
                     stmt.addBatch();
                 }
                 stmt.executeBatch();

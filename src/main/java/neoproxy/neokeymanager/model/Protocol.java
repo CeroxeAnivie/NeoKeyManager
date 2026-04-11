@@ -34,7 +34,7 @@ public class Protocol {
      * 与 NPS 的 HeartbeatPayload 保持字段一致
      */
     public static class HeartbeatPayload implements Serializable {
-        public String serial;           // 密钥序列号
+        public String serial;           // 密钥
         public String nodeId;           // 节点ID
         public String port;             // 端口
         public long timestamp;          // 时间戳（NPS 特有）
@@ -65,7 +65,7 @@ public class Protocol {
      * 密钥释放请求负载
      */
     public static class ReleasePayload implements Serializable {
-        public String serial;           // 密钥序列号
+        public String serial;           // 密钥
         public String nodeId;           // 节点ID
     }
 
