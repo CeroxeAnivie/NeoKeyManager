@@ -108,17 +108,11 @@ class ServerLoggerTest {
 
     @Test
     void testErrorWithException() {
-        // 临时关闭测试模式以验证异常输出
-        ServerLogger.setTestMode(false);
-        try {
-            Exception testException = new RuntimeException("Test exception");
-            ServerLogger.error("TestSource", "nkm.error.test", testException);
+        Exception testException = new RuntimeException("Test exception");
+        ServerLogger.error("TestSource", "nkm.error.test", testException);
 
-            String output = errContent.toString();
-            assertThat(output).contains("Test exception");
-        } finally {
-            ServerLogger.setTestMode(true);
-        }
+        String output = errContent.toString();
+        assertThat(output).contains("Test exception");
     }
 
     @Test
@@ -244,19 +238,13 @@ class ServerLoggerTest {
 
     @Test
     void testNestedException() {
-        // 临时关闭测试模式以验证异常输出
-        ServerLogger.setTestMode(false);
-        try {
-            Exception inner = new RuntimeException("Inner");
-            Exception outer = new RuntimeException("Outer", inner);
+        Exception inner = new RuntimeException("Inner");
+        Exception outer = new RuntimeException("Outer", inner);
 
-            ServerLogger.error("Test", "nkm.error.test", outer);
+        ServerLogger.error("Test", "nkm.error.test", outer);
 
-            String output = errContent.toString();
-            assertThat(output).contains("Outer");
-            assertThat(output).contains("Inner");
-        } finally {
-            ServerLogger.setTestMode(true);
-        }
+        String output = errContent.toString();
+        assertThat(output).contains("Outer");
+        assertThat(output).contains("Inner");
     }
 }

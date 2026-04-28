@@ -18,6 +18,7 @@
 *   **🛑 自定义屏蔽消息 (CBM)**：[新] 支持为被封禁/禁用的密钥下发自定义断开提示 (例如："您的套餐已过期，请联系管理员")。
 *   **👑 主节点独占策略**：[新] 可配置全局默认节点，未单独分配映射的密钥将只能在指定的主节点上使用。
 *   **🔄 无缝热重载**：[新] 支持通过 API 或 CLI 指令热重载配置文件与白名单，全程不停机。
+*   **🛡️ 企业级安全**：[新] 强制请求签名验证 (HMAC-SHA256) + IP 锁定机制，有效防止请求篡改、重放攻击和暴力破解。
 
 ---
 
@@ -77,6 +78,7 @@ SERVER_PORT=8080
 AUTH_TOKEN=your_nps_connect_token
 
 # 管理员 Token (用于 Admin API 控制与自动化脚本)
+# 注意：此 Token 同时用于请求签名验证 (X-Signature)
 ADMIN_TOKEN=your_admin_secret_key
 
 # 数据库路径 (SQLite 数据库文件路径)
@@ -87,15 +89,19 @@ DB_PATH=./neokey_db
 DEFAULT_NODE=
 
 # 公开节点列表配置文件路径 (提供给客户端拉取)
-NODE_JSON_FILE=node.json
+NODE_JSON_FILE=nodes.json
 
 # 客户端自动更新下载包链接 (NeoLink)
-CLIENT_UPDATE_URL_7Z=https://your-domain.com/NeoLink-latest.7z
+CLIENT_UPDATE_URL_EXE=https://your-domain.com/NeoLink-latest.exe
 CLIENT_UPDATE_URL_JAR=https://your-domain.com/NeoLink-latest.jar
 
 # SSL 配置 (配置后自动开启 HTTPS)
 SSL_CRT_PATH=
 SSL_KEY_PATH=
+
+# CORS 跨域配置
+CORS_ALLOWED_ORIGINS=*
+CORS_ALLOW_CREDENTIALS=false
 ```
 
 ---
@@ -185,7 +191,7 @@ NKM 控制台支持以下指令。所有指令均即时生效，无需重启。
 
 *   **列出密钥**：`key list` (显示状态、余额、[S]单例标记、端口映射树)
 *   **查看活跃会话**：`list` (显示当前在线的节点、IP、使用的别名与真实 Key)
-*   **重载配置**：`reload` (热重载 properties、NodeAuth、node.json)
+*   **重载配置**：`reload` (热重载 properties、NodeAuth、nodes.json)
 *   **退出**：`stop`
 
 ---
@@ -195,8 +201,50 @@ NKM 控制台支持以下指令。所有指令均即时生效，无需重启。
 NKM 提供了完整的 RESTful API 用于对接面板或计费系统。
 
 ### 1. 管理端 API (需验证)
-*   **Header**: `Authorization: Bearer <ADMIN_TOKEN>`
+*   **Header**: 
+    *   `Authorization: Bearer <ADMIN_TOKEN>`
+    *   `X-Timestamp: <Unix时间戳>` (当前时间的秒级时间戳，有效期5分钟)
+    *   `X-Signature: <HMAC-SHA256签名>` (见下方签名算法)
 *   **Base URL**: `http://ip:port`
+
+#### 请求签名算法
+所有管理端 API 请求必须携带有效的签名，防止请求被篡改和重放攻击。
+
+**签名计算方式：**
+```
+签名数据 = HTTP方法|请求路径|时间戳|请求体
+签名 = Base64(HMAC-SHA256(签名数据, ADMIN_TOKEN))
+```
+
+**示例 (Python):**
+```python
+import hmac
+import hashlib
+import base64
+import time
+
+admin_token = "your_admin_token"
+method = "POST"
+path = "/api/exec/key%20add"
+timestamp = str(int(time.time()))
+body = '{"args": ["user1", "1000", "PERMANENT", "30000", "50"]}'
+
+# 构造签名数据
+data = f"{method}|{path}|{timestamp}|{body}"
+
+# 计算 HMAC-SHA256
+signature = base64.b64encode(
+    hmac.new(admin_token.encode(), data.encode(), hashlib.sha256).digest()
+).decode()
+
+# 发送请求
+headers = {
+    "Authorization": f"Bearer {admin_token}",
+    "X-Timestamp": timestamp,
+    "X-Signature": signature,
+    "Content-Type": "application/json"
+}
+```
 
 | Method | Endpoint | Description | Payload Example |
 |:---|:---|:---|:---|
@@ -210,7 +258,7 @@ NKM 提供了完整的 RESTful API 用于对接面板或计费系统。
 
 *   **Endpoint**: `GET /client/nodelist`
 *   **防护机制**: 基于真实 IP 的滑动窗口限流 (限制 10次/天/IP)。
-*   **返回机制**: 仅返回 `node.json` 中配置且**最近 1 分钟内有心跳上报**的存活节点。
+*   **返回机制**: 仅返回 `nodes.json` 中配置且**最近 1 分钟内有心跳上报**的存活节点。
 
 ---
 

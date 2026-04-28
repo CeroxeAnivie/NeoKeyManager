@@ -38,19 +38,37 @@ public class AdminHandler implements HttpHandler {
     @Override
     public void handle(HttpExchange exchange) {
         try {
-            // 1. Security Check
+            String clientIp = IpRateLimiter.getClientIp(exchange);
+            SecurityManager securityManager = SecurityManager.getInstance();
+            if (securityManager.isIpLocked(clientIp)) {
+                sendJson(exchange, 423, new AdminResponse(false,
+                        "IP locked. Retry after " + securityManager.getRemainingLockSeconds(clientIp) + " seconds.", null));
+                return;
+            }
+
+            String bodyText = readBody(exchange);
+
             String auth = exchange.getRequestHeaders().getFirst("Authorization");
-            if (auth == null || !auth.equals("Bearer " + Config.ADMIN_TOKEN)) {
+            if (!SecurityManager.constantTimeEquals(auth, "Bearer " + Config.ADMIN_TOKEN)) {
+                securityManager.recordAuthFailure(clientIp);
                 sendJson(exchange, 401, new AdminResponse(false, "Unauthorized", null));
                 return;
             }
 
+            SecurityManager.SignatureValidationResult signatureResult = securityManager.validateSignature(exchange, bodyText);
+            if (!signatureResult.valid()) {
+                securityManager.recordAuthFailure(clientIp);
+                sendJson(exchange, 401, new AdminResponse(false, signatureResult.reason(), null));
+                return;
+            }
+
+            securityManager.recordAuthSuccess(clientIp);
+
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
 
-            // 2. Routing
             if (path.startsWith("/api/exec/") && "POST".equals(method)) {
-                handleExec(exchange, path, exchange.getRequestBody());
+                handleExec(exchange, path, bodyText);
             } else if (path.equals("/api/query") && "GET".equals(method)) {
                 handleQuery(exchange, true);
             } else if (path.equals("/api/querynomap") && "GET".equals(method)) {
@@ -69,7 +87,7 @@ public class AdminHandler implements HttpHandler {
             }
 
         } catch (Exception e) {
-            ServerLogger.error("AdminAPI", "Unhandled Exception", e);
+            ServerLogger.error("AdminAPI", "nkm.error.unhandled", e);
             try {
                 sendJson(exchange, 500, new AdminResponse(false, "Internal Server Error: " + e.getMessage(), null));
             } catch (IOException ignored) {
@@ -77,7 +95,13 @@ public class AdminHandler implements HttpHandler {
         }
     }
 
-    private void handleExec(HttpExchange exchange, String path, InputStream body) throws IOException {
+    private String readBody(HttpExchange exchange) throws IOException {
+        try (InputStream body = exchange.getRequestBody()) {
+            return new String(body.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private void handleExec(HttpExchange exchange, String path, String bodyText) throws IOException {
         Matcher m = EXEC_PATH_REGEX.matcher(path);
         if (!m.matches()) {
             sendJson(exchange, 404, new AdminResponse(false, "Invalid Exec Path", null));
@@ -87,7 +111,7 @@ public class AdminHandler implements HttpHandler {
         String cmd = m.group(1).toLowerCase();
         ExecRequest req;
         try {
-            req = Utils.parseJson(body, ExecRequest.class);
+            req = Utils.parseJson(bodyText, ExecRequest.class);
         } catch (Exception e) {
             sendJson(exchange, 400, new AdminResponse(false, "Invalid JSON Body", null));
             return;
@@ -134,7 +158,7 @@ public class AdminHandler implements HttpHandler {
             sendJson(exchange, 409, new AdminResponse(false, e.getMessage(), null));
         } catch (Exception e) {
             // 系统错误 (DB挂了等) -> 500
-            ServerLogger.error("AdminExec", "Command Failed: " + cmd, e);
+            ServerLogger.error("AdminExec", "nkm.error.commandFailed", e, cmd);
             sendJson(exchange, 500, new AdminResponse(false, "Execution failed: " + e.getMessage(), null));
         }
     }

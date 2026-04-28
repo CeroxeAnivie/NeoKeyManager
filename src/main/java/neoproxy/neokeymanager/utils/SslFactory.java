@@ -10,7 +10,9 @@ import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
-import java.io.FileReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.Security;
@@ -46,7 +48,7 @@ public class SslFactory {
     }
 
     private static PrivateKey loadPrivateKey(String path) throws Exception {
-        try (PEMParser parser = new PEMParser(new FileReader(path))) {
+        try (PEMParser parser = new PEMParser(Files.newBufferedReader(Path.of(path), StandardCharsets.UTF_8))) {
             Object object = parser.readObject();
             JcaPEMKeyConverter converter = new JcaPEMKeyConverter().setProvider("BC");
 
@@ -64,7 +66,7 @@ public class SslFactory {
         List<Certificate> certs = new ArrayList<>();
         JcaX509CertificateConverter converter = new JcaX509CertificateConverter().setProvider("BC");
 
-        try (PEMParser parser = new PEMParser(new FileReader(path))) {
+        try (PEMParser parser = new PEMParser(Files.newBufferedReader(Path.of(path), StandardCharsets.UTF_8))) {
             Object obj;
             while ((obj = parser.readObject()) != null) {
                 if (obj instanceof X509CertificateHolder) {

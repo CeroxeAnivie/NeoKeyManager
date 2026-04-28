@@ -1,50 +1,10 @@
 {
-  "" : {
-    "realId" : "",
-    "displayName" : ""
+  "node-suqian" : {
+    "realId" : "node-suqian",
+    "displayName" : "China - Suqian Official"
   },
-  "中文节点" : {
-    "realId" : "中文节点",
-    "displayName" : "中文显示"
-  },
-  "node0" : {
-    "realId" : "node0",
-    "displayName" : "Node 0"
-  },
-  "node1" : {
-    "realId" : "node1",
-    "displayName" : "Node 1"
-  },
-  "node4" : {
-    "realId" : "node4",
-    "displayName" : "Node 4"
-  },
-  "node5" : {
-    "realId" : "node5",
-    "displayName" : "Node 5"
-  },
-  "node2" : {
-    "realId" : "node2",
-    "displayName" : "Node 2"
-  },
-  "node3" : {
-    "realId" : "node3",
-    "displayName" : "Node 3"
-  },
-  "node8" : {
-    "realId" : "node8",
-    "displayName" : "Node 8"
-  },
-  "node9" : {
-    "realId" : "node9",
-    "displayName" : "Node 9"
-  },
-  "node6" : {
-    "realId" : "node6",
-    "displayName" : "Node 6"
-  },
-  "node7" : {
-    "realId" : "node7",
-    "displayName" : "Node 7"
+  "node-chengdu-lxc-01" : {
+    "realId" : "node-chengdu-lxc-01",
+    "displayName" : "China - Chengdu Official"
   }
 }

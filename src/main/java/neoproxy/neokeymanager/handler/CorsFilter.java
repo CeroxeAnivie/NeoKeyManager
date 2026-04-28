@@ -4,107 +4,72 @@ import com.sun.net.httpserver.Filter;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * CORS过滤器 - 跨域资源共享
- * 【安全增强】支持可配置的CORS策略
- * 参考 NeoAuthServer 实现
+ * HTTP-server-native CORS filter.
+ *
+ * CORS is kept at the routing boundary instead of inside business handlers so
+ * preflight requests never consume command or authentication code paths.
  */
-public class CorsFilter extends Filter {
+public final class CorsFilter extends Filter {
 
     private final String allowedOrigins;
     private final boolean allowCredentials;
+    private final Set<String> normalizedOrigins;
 
-    /**
-     * 创建CORS过滤器
-     * @param allowedOrigins 允许的源，逗号分隔，*表示允许所有（生产环境不推荐）
-     * @param allowCredentials 是否允许携带凭证
-     */
     public CorsFilter(String allowedOrigins, boolean allowCredentials) {
-        this.allowedOrigins = allowedOrigins != null ? allowedOrigins : "*";
+        this.allowedOrigins = (allowedOrigins == null || allowedOrigins.isBlank()) ? "*" : allowedOrigins.trim();
         this.allowCredentials = allowCredentials;
+        this.normalizedOrigins = Arrays.stream(this.allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(s -> s.toLowerCase(Locale.ROOT))
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     @Override
     public void doFilter(HttpExchange exchange, Chain chain) throws IOException {
         String origin = exchange.getRequestHeaders().getFirst("Origin");
-        String requestMethod = exchange.getRequestMethod();
+        applyCorsHeaders(exchange, origin);
 
-        // 处理预检请求 (OPTIONS)
-        if ("OPTIONS".equalsIgnoreCase(requestMethod)) {
-            handlePreflight(exchange, origin);
+        if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
             return;
         }
 
-        // 处理实际请求
-        handleActualRequest(exchange, origin);
         chain.doFilter(exchange);
     }
 
-    private void handlePreflight(HttpExchange exchange, String origin) throws IOException {
+    private void applyCorsHeaders(HttpExchange exchange, String origin) {
         var headers = exchange.getResponseHeaders();
-
-        // 设置允许的源
-        if ("*".equals(allowedOrigins)) {
+        if ("*".equals(allowedOrigins) && !allowCredentials) {
             headers.set("Access-Control-Allow-Origin", "*");
-        } else if (origin != null && isOriginAllowed(origin)) {
+        } else if (origin != null && isAllowed(origin)) {
             headers.set("Access-Control-Allow-Origin", origin);
             headers.set("Vary", "Origin");
         }
 
-        // 设置允许的方法
-        headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-
-        // 设置允许的请求头
-        headers.set("Access-Control-Allow-Headers",
-            "Content-Type, Authorization, X-Requested-With, Accept, Origin");
-
-        // 设置预检请求缓存时间
+        headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Timestamp, X-Nonce, X-Signature");
         headers.set("Access-Control-Max-Age", "86400");
+        headers.set("Access-Control-Expose-Headers", "X-RateLimit-Remaining");
 
-        // 是否允许携带凭证
-        if (allowCredentials && !"*".equals(allowedOrigins)) {
-            headers.set("Access-Control-Allow-Credentials", "true");
-        }
-
-        // 暴露的响应头
-        headers.set("Access-Control-Expose-Headers", "X-Request-ID");
-
-        exchange.sendResponseHeaders(204, -1);
-        exchange.close();
-    }
-
-    private void handleActualRequest(HttpExchange exchange, String origin) {
-        var headers = exchange.getResponseHeaders();
-
-        // 设置允许的源
-        if ("*".equals(allowedOrigins)) {
-            headers.set("Access-Control-Allow-Origin", "*");
-        } else if (origin != null && isOriginAllowed(origin)) {
-            headers.set("Access-Control-Allow-Origin", origin);
-            headers.set("Vary", "Origin");
-        }
-
-        // 是否允许携带凭证
-        if (allowCredentials && !"*".equals(allowedOrigins)) {
+        if (allowCredentials && origin != null && isAllowed(origin)) {
             headers.set("Access-Control-Allow-Credentials", "true");
         }
     }
 
-    private boolean isOriginAllowed(String origin) {
-        if ("*".equals(allowedOrigins)) return true;
-
-        String[] origins = allowedOrigins.split(",");
-        for (String allowed : origins) {
-            if (allowed.trim().equalsIgnoreCase(origin)) {
-                return true;
-            }
-        }
-        return false;
+    private boolean isAllowed(String origin) {
+        return normalizedOrigins.contains("*") || normalizedOrigins.contains(origin.trim().toLowerCase(Locale.ROOT));
     }
 
     @Override
     public String description() {
-        return "CORS Filter - Allowed Origins: " + allowedOrigins;
+        return "NeoKeyManager CORS Filter";
     }
 }

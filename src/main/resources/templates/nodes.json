@@ -1,0 +1,18 @@
+[
+  {
+    "realId": "node-suqian",
+    "name": "中国 - 宿迁官方",
+    "address": "p.ceroxe.fun",
+    "icon": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 600'><rect width='900' height='600' fill='#de2910'/><path fill='#ffde00' d='M288 120l35 108-92-67h114l-92 67z'/></svg>",
+    "HOST_HOOK_PORT": 44801,
+    "HOST_CONNECT_PORT": 44802
+  },
+  {
+    "realId": "node-chengdu-lxc-01",
+    "name": "中国 - 成都官方",
+    "address": "47.109.55.170",
+    "icon": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 600'><rect width='900' height='600' fill='#de2910'/><path fill='#ffde00' d='M288 120l35 108-92-67h114l-92 67z'/></svg>",
+    "HOST_HOOK_PORT": 44801,
+    "HOST_CONNECT_PORT": 44802
+  }
+]

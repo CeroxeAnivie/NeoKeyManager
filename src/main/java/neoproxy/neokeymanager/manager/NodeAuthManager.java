@@ -1,18 +1,15 @@
 package neoproxy.neokeymanager.manager;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -22,10 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class NodeAuthManager {
 
     private static final String AUTH_FILE = "NodeAuth.json";
-    private static final Gson GSON = new GsonBuilder()
-            .setPrettyPrinting()
-            .disableHtmlEscaping()
-            .create();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static NodeAuthManager INSTANCE = new NodeAuthManager();
 
     // Key: Lowercase Real NodeID, Value: NodeConfig
@@ -33,6 +27,7 @@ public class NodeAuthManager {
 
     // 反向映射字典: DisplayName -> Lowercase Real NodeID
     private final ConcurrentHashMap<String, String> displayNameToRealIdMap = new ConcurrentHashMap<>();
+    private final Set<String> ambiguousDisplayNames = ConcurrentHashMap.newKeySet();
 
     private NodeAuthManager() {
         load();
@@ -54,7 +49,7 @@ public class NodeAuthManager {
      * 逻辑：先从缓存查，没有则重载文件查。若文件中不存在，则拒绝。
      */
     public String authenticateAndGetAlias(String realNodeId) {
-        if (realNodeId == null) return null;
+        if (realNodeId == null || realNodeId.isBlank()) return null;
         String key = realNodeId.toLowerCase().trim();
 
         // 1. 尝试从当前缓存获取
@@ -68,7 +63,7 @@ public class NodeAuthManager {
         // 3. 再次检查
         if (authMap.containsKey(key)) {
             NodeConfig config = authMap.get(key);
-            ServerLogger.infoWithSource("NodeAuth", "nkm.node.hotLoaded", realNodeId, config.displayName);
+            ServerLogger.info("NodeAuth", "nkm.node.hotLoaded", realNodeId, config.displayName);
             return config.displayName;
         }
 
@@ -91,7 +86,18 @@ public class NodeAuthManager {
      */
     public String getRealIdByDisplayName(String displayName) {
         if (displayName == null) return null;
-        return displayNameToRealIdMap.get(displayName);
+        String normalized = displayName.trim();
+        if (normalized.isEmpty() || ambiguousDisplayNames.contains(normalized)) return null;
+        return displayNameToRealIdMap.get(normalized);
+    }
+
+    /**
+     * 返回 NodeAuth 中登记的规范 realId，避免不同入口用大小写或空格创建出多套节点身份。
+     */
+    public String getCanonicalRealId(String realNodeId) {
+        if (realNodeId == null || realNodeId.isBlank()) return null;
+        NodeConfig config = authMap.get(realNodeId.toLowerCase().trim());
+        return config == null ? null : config.realId;
     }
 
     /**
@@ -106,15 +112,18 @@ public class NodeAuthManager {
      */
     public synchronized void addNodeToAllowlist(String realId, String displayName) {
         if (realId == null || realId.isBlank()) {
-            ServerLogger.warnWithSource("NodeAuth", "nkm.error.invalidParam", "realId", "null or blank");
+            ServerLogger.warnWithSource("NodeAuth", "nkm.node.invalidRealId");
             return;
         }
-        NodeConfig config = new NodeConfig(realId, displayName);
-        String lowerKey = realId.toLowerCase().trim();
-        authMap.put(lowerKey, config);
-        if (displayName != null && !displayName.isBlank()) {
-            displayNameToRealIdMap.put(displayName, lowerKey);
+        String normalizedRealId = realId.trim();
+        String normalizedDisplayName = (displayName == null || displayName.isBlank()) ? normalizedRealId : displayName.trim();
+        NodeConfig config = new NodeConfig(normalizedRealId, normalizedDisplayName);
+        String lowerKey = normalizedRealId.toLowerCase().trim();
+        NodeConfig previous = authMap.put(lowerKey, config);
+        if (previous != null && previous.displayName != null && !previous.displayName.equals(normalizedDisplayName)) {
+            displayNameToRealIdMap.remove(previous.displayName, lowerKey);
         }
+        registerDisplayName(normalizedDisplayName, lowerKey);
         save();
     }
 
@@ -126,31 +135,65 @@ public class NodeAuthManager {
         String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
         File file = new File(authFilePath);
         if (!file.exists()) {
-            // 文件不存在是正常情况，静默处理
+            ServerLogger.warnWithSource("NodeAuth", "nkm.node.authFileMissing", authFilePath);
             authMap.clear();
             displayNameToRealIdMap.clear();
+            ambiguousDisplayNames.clear();
             return;
         }
-        try (FileReader reader = new FileReader(file, StandardCharsets.UTF_8)) {
-            Map<String, NodeConfig> loaded = GSON.fromJson(reader, new TypeToken<Map<String, NodeConfig>>() {}.getType());
+        try {
+            Map<String, NodeConfig> loaded = MAPPER.readValue(file, new TypeReference<Map<String, NodeConfig>>() {
+            });
 
             authMap.clear();
             displayNameToRealIdMap.clear();
+            ambiguousDisplayNames.clear();
 
             if (loaded != null) {
                 loaded.forEach((k, v) -> {
-                    String lowerKey = k.toLowerCase().trim();
-                    authMap.put(lowerKey, v);
-                    if (v.displayName != null) {
-                        displayNameToRealIdMap.put(v.displayName, lowerKey);
-                    }
+                    NodeConfig sanitized = sanitizeNodeConfig(k, v);
+                    if (sanitized == null) return;
+
+                    String lowerKey = sanitized.realId.toLowerCase().trim();
+                    authMap.put(lowerKey, sanitized);
+                    registerDisplayName(sanitized.displayName, lowerKey);
                 });
             }
         } catch (Exception e) {
-            ServerLogger.errorWithSource("NodeAuth", "nkm.error.jsonParse", e);
+            ServerLogger.error("NodeAuth", "nkm.node.authLoadFail", e);
             authMap.clear();
             displayNameToRealIdMap.clear();
+            ambiguousDisplayNames.clear();
         }
+    }
+
+    private void registerDisplayName(String displayName, String lowerRealId) {
+        if (displayName == null || displayName.isBlank() || lowerRealId == null || lowerRealId.isBlank()) return;
+        String normalizedDisplayName = displayName.trim();
+        if (ambiguousDisplayNames.contains(normalizedDisplayName)) return;
+
+        String existing = displayNameToRealIdMap.putIfAbsent(normalizedDisplayName, lowerRealId);
+        if (existing != null && !existing.equals(lowerRealId)) {
+            displayNameToRealIdMap.remove(normalizedDisplayName);
+            ambiguousDisplayNames.add(normalizedDisplayName);
+            ServerLogger.warnWithSource("NodeAuth", "nkm.node.duplicateDisplayName", normalizedDisplayName);
+        }
+    }
+
+    private NodeConfig sanitizeNodeConfig(String jsonKey, NodeConfig config) {
+        String keyCandidate = jsonKey == null ? "" : jsonKey.trim();
+        String realIdCandidate = config == null || config.realId == null ? "" : config.realId.trim();
+        String realId = !realIdCandidate.isBlank() ? realIdCandidate : keyCandidate;
+
+        if (realId.isBlank()) {
+            ServerLogger.warnWithSource("NodeAuth", "nkm.node.invalidEntry", jsonKey);
+            return null;
+        }
+
+        String displayName = config == null || config.displayName == null || config.displayName.isBlank()
+                ? realId
+                : config.displayName.trim();
+        return new NodeConfig(realId, displayName);
     }
 
     /**
@@ -159,11 +202,9 @@ public class NodeAuthManager {
     private synchronized void save() {
         try {
             String authFilePath = System.getProperty("node.auth.file", AUTH_FILE);
-            try (FileWriter writer = new FileWriter(authFilePath, StandardCharsets.UTF_8)) {
-                GSON.toJson(authMap, writer);
-            }
+            MAPPER.writerWithDefaultPrettyPrinter().writeValue(new File(authFilePath), authMap);
         } catch (IOException e) {
-            ServerLogger.errorWithSource("NodeAuth", "nkm.error.fileWrite", e);
+            ServerLogger.error("NodeAuth", "nkm.node.authSaveFail", e);
         }
     }
 

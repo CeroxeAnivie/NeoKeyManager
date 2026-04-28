@@ -222,13 +222,12 @@ class NodeAuthManagerTest {
         authManager.load();
 
         authManager.addNodeToAllowlist("node1", "Node One");
-        // 允许添加相同displayName的不同realId
+        // 展示名不是稳定身份，重复展示名不能再作为反向映射依据。
         authManager.addNodeToAllowlist("node2", "Node One");
 
         // 验证两个节点都存在
         assertThat(authManager.getAllRegisteredNodes()).hasSize(2);
-        // 反向查询应该返回最后添加的realId
-        assertThat(authManager.getRealIdByDisplayName("Node One")).isEqualTo("node2");
+        assertThat(authManager.getRealIdByDisplayName("Node One")).isNull();
     }
 
     @Test
@@ -315,7 +314,8 @@ class NodeAuthManagerTest {
 
         String alias = authManager.authenticateAndGetAlias("");
 
-        assertThat(alias).isEqualTo("Empty Node");
+        assertThat(alias).isNull();
+        assertThat(authManager.getAllRegisteredNodes()).isEmpty();
     }
 
     @Test
@@ -334,7 +334,7 @@ class NodeAuthManagerTest {
 
         authManager.addNodeToAllowlist("", "");
 
-        assertThat(authManager.getAlias("")).isEqualTo("");
+        assertThat(authManager.getAllRegisteredNodes()).isEmpty();
     }
 
     @Test

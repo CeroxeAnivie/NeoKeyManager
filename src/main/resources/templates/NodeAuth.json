@@ -1,0 +1,10 @@
+{
+  "node-suqian": {
+    "realId": "node-suqian",
+    "displayName": "中国 - 宿迁官方"
+  },
+  "node-chengdu-lxc-01": {
+    "realId": "node-chengdu-lxc-01",
+    "displayName": "中国 - 成都官方"
+  }
+}

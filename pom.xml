@@ -6,7 +6,7 @@
 
     <groupId>neoproxy.neokeymanager</groupId>
     <artifactId>NeoKeyManager</artifactId>
-    <version>5.0.0</version>
+    <version>4.0.7</version>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -18,7 +18,7 @@
         <dependency>
             <groupId>fun.ceroxe.api</groupId>
             <artifactId>ceroxe-core</artifactId>
-            <version>0.2.6</version>
+            <version>1.0.0</version>
         </dependency>
         <!-- SQLite 驱动 (全平台 All-in-One) -->
         <dependency>
@@ -32,11 +32,17 @@
             <artifactId>bcpkix-jdk18on</artifactId>
             <version>1.79</version>
         </dependency>
-        <!-- Gson JSON 处理库 -->
+        <!-- Jackson JSON 处理库 -->
         <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.13.2</version>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.15.2</version>
+        </dependency>
+        <!-- Jackson JSR310 模块：支持 JDK 8 日期时间类型的序列化/反序列化 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>2.15.2</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

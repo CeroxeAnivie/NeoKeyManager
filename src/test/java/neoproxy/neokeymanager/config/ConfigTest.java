@@ -44,12 +44,12 @@ class ConfigTest {
     void testDefaultValues() {
         // 测试默认值
         assertThat(Config.PORT).isEqualTo(8080);
-        assertThat(Config.AUTH_TOKEN).isEqualTo("default_token");
-        assertThat(Config.ADMIN_TOKEN).isEqualTo("admin_secret");
+        assertThat(Config.AUTH_TOKEN).isEqualTo("nkm-node-token");
+        assertThat(Config.ADMIN_TOKEN).isEqualTo("nkm-admin-token");
         assertThat(Config.DB_PATH).isEqualTo("./neokey_db");
         assertThat(Config.SSL_CRT_PATH).isNull();
         assertThat(Config.SSL_KEY_PATH).isNull();
-        assertThat(Config.CLIENT_UPDATE_URL_7Z).isEmpty();
+        assertThat(Config.CLIENT_UPDATE_URL_EXE).isEmpty();
         assertThat(Config.CLIENT_UPDATE_URL_JAR).isEmpty();
         assertThat(Config.DEFAULT_NODE).isEmpty();
         assertThat(Config.NODE_JSON_FILE).isEmpty();
@@ -63,7 +63,7 @@ class ConfigTest {
             writer.write("AUTH_TOKEN=test_token\n");
             writer.write("ADMIN_TOKEN=test_admin\n");
             writer.write("DB_PATH=./test_db\n");
-            writer.write("CLIENT_UPDATE_URL_7Z=http://example.com/update.7z\n");
+            writer.write("CLIENT_UPDATE_URL_EXE=http://example.com/update.exe\n");
             writer.write("CLIENT_UPDATE_URL_JAR=http://example.com/update.jar\n");
             writer.write("DEFAULT_NODE=node1\n");
             writer.write("NODE_JSON_FILE=nodes.json\n");
@@ -75,7 +75,7 @@ class ConfigTest {
         assertThat(Config.AUTH_TOKEN).isEqualTo("test_token");
         assertThat(Config.ADMIN_TOKEN).isEqualTo("test_admin");
         assertThat(Config.DB_PATH).isEqualTo("./test_db");
-        assertThat(Config.CLIENT_UPDATE_URL_7Z).isEqualTo("http://example.com/update.7z");
+        assertThat(Config.CLIENT_UPDATE_URL_EXE).isEqualTo("http://example.com/update.exe");
         assertThat(Config.CLIENT_UPDATE_URL_JAR).isEqualTo("http://example.com/update.jar");
         assertThat(Config.DEFAULT_NODE).isEqualTo("node1");
         assertThat(Config.NODE_JSON_FILE).isEqualTo("nodes.json");
@@ -121,7 +121,7 @@ class ConfigTest {
         assertThat(Config.PORT).isEqualTo(7777);
         assertThat(Config.AUTH_TOKEN).isEqualTo("partial_token");
         // 其他应该使用默认值
-        assertThat(Config.ADMIN_TOKEN).isEqualTo("admin_secret");
+        assertThat(Config.ADMIN_TOKEN).isEqualTo("nkm-admin-token");
     }
 
     @Test

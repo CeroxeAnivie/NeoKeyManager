@@ -13,38 +13,9 @@ public class ServerLogger {
     public static boolean alert = true;
     private static ResourceBundle bundle;
     private static Locale currentLocale = Locale.getDefault(); // 默认跟随系统
-    private static boolean testMode = false; // 测试模式标志，避免在测试中打印堆栈
 
     static {
         setLocale(currentLocale);
-        // 检测是否在测试环境中运行
-        testMode = isTestEnvironment();
-    }
-
-    /**
-     * 检测当前是否在测试环境中运行
-     */
-    private static boolean isTestEnvironment() {
-        try {
-            StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-            for (StackTraceElement element : stackTrace) {
-                String className = element.getClassName();
-                if (className.contains("org.junit.") ||
-                    className.contains("org.testng.") ||
-                    className.contains("org.junit.jupiter.")) {
-                    return true;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return false;
-    }
-
-    /**
-     * 手动设置测试模式（供测试类使用）
-     */
-    public static void setTestMode(boolean enabled) {
-        testMode = enabled;
     }
 
     public static void setLocale(Locale locale) {
@@ -90,10 +61,7 @@ public class ServerLogger {
             Application.myConsole.error(source, message, e);
         } else {
             System.err.println("[" + source + "] " + message);
-            // 在测试模式下不打印异常堆栈，保持测试输出整洁
-            if (e != null && !testMode) {
-                e.printStackTrace();
-            }
+            if (e != null) e.printStackTrace();
         }
     }
 

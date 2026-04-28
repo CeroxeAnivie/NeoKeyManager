@@ -1,16 +1,16 @@
 package neoproxy.neokeymanager;
 
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpContext;
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import fun.ceroxe.api.utils.MyConsole;
-import neoproxy.neokeymanager.cli.CommandRegistry;
 import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
 import neoproxy.neokeymanager.handler.AdminHandler;
 import neoproxy.neokeymanager.handler.ClientHandler;
 import neoproxy.neokeymanager.handler.CorsFilter;
-import neoproxy.neokeymanager.handler.CorsHandlerWrapper;
 import neoproxy.neokeymanager.handler.KeyHandler;
 import neoproxy.neokeymanager.manager.NodeAuthManager;
 import neoproxy.neokeymanager.manager.NodeManager;
@@ -26,16 +26,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * NeoKeyManager 应用程序主类
- */
 public class Application {
     private static final KeyService keyService = new KeyService();
     public static MyConsole myConsole;
     private static HttpServer httpServer;
-    private static CommandRegistry commandRegistry;
+    private static ExecutorService webExecutor;
 
     public static void main(String[] args) throws IOException {
         myConsole = new MyConsole("NeoKeyManager");
@@ -44,29 +42,28 @@ public class Application {
 
         try {
             Config.load();
-            myConsole.log("NeoKeyManager", "\n" + getBanner());
+            myConsole.log("NeoKeyManager", "\n" + """
+                    
+                       _____                                    \s
+                      / ____|                                   \s
+                     | |        ___   _ __    ___   __  __   ___\s
+                     | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
+                     | |____  |  __/ | |    | (_) |  >  <  |  __/
+                      \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
+                                                                \s
+                                                                 \
+                    """);
             ServerLogger.infoWithSource("System", "nkm.system.init");
             Database.init();
-            commandRegistry = new CommandRegistry(myConsole, keyService);
-            startWebServer();
+            registerCommands();
+            if (!startWebServer()) {
+                throw new IOException("Web server failed to start");
+            }
             myConsole.start();
         } catch (Exception e) {
             ServerLogger.error("System", "nkm.error.startupFail", e);
             System.exit(1);
         }
-    }
-
-    private static String getBanner() {
-        return """
-               
-                  _____                                   
-                 / ____|                                  
-                | |        ___   _ __    ___   __  __   ___
-                | |       / _ \\ | '__|  / _ \\  \\ \\/ /  / _ \\
-                | |____  |  __/ | |    | (_) |  >  <  |  __/
-                 \\_____|  \\___| |_|     \\___/  /_/\\_\\  \\___|
-                                                           
-               """;
     }
 
     private static void checkARGS(String[] args) {
@@ -87,21 +84,29 @@ public class Application {
             ServerLogger.infoWithSource("System", "nkm.info.reloading");
 
             // 1. 重载配置文件
-            Config.load();
+            Config.load(false);
             // 2. 重载节点鉴权白名单
             NodeAuthManager.getInstance().load();
-            // 3. 热重载公开节点列表 (node.json)
-            NodeManager.getInstance().loadNodeJson();
+            // 3. 热重载公开节点列表 (nodes.json)
+            NodeManager.getInstance().loadNodesJson();
             // 4. 重启 Web 服务
-            startWebServer();
+            if (!startWebServer()) {
+                ServerLogger.errorWithSource("System", "nkm.system.reloadWebFail");
+                return;
+            }
 
             ServerLogger.infoWithSource("System", "nkm.info.reloadComplete");
         }, "NKM-Reloader").start();
     }
 
-    private static void startWebServer() {
+    private static synchronized boolean startWebServer() {
         stopWebServer();
         boolean sslSuccess = false;
+
+        if (Config.SSL_MISCONFIGURED) {
+            ServerLogger.errorWithSource("System", "nkm.system.sslMisconfigured");
+            return false;
+        }
 
         if (Config.SSL_CRT_PATH != null && Config.SSL_KEY_PATH != null) {
             try {
@@ -113,6 +118,7 @@ public class Application {
                 ServerLogger.infoWithSource("System", "nkm.system.startedHttps", Config.PORT);
             } catch (Exception e) {
                 ServerLogger.error("System", "nkm.system.sslFail", e);
+                return false;
             }
         }
 
@@ -122,6 +128,7 @@ public class Application {
                 ServerLogger.infoWithSource("System", "nkm.system.startedHttp", Config.PORT);
             } catch (IOException e) {
                 ServerLogger.error("System", "nkm.system.bindFail", e, Config.PORT);
+                return false;
             }
         }
 
@@ -130,38 +137,214 @@ public class Application {
             ClientHandler clientHandler = new ClientHandler();
             KeyHandler keyHandler = new KeyHandler();
 
-            // [安全增强] 创建 CORS Filter
-            CorsFilter corsFilter = new CorsFilter(Config.CORS_ALLOWED_ORIGINS, Config.CORS_ALLOW_CREDENTIALS);
+            registerContext("/api/exec", adminHandler);
+            registerContext("/api/query", adminHandler);
+            registerContext("/api/querynomap", adminHandler);
+            registerContext("/api/lp", adminHandler);
+            registerContext("/api/lpnomap", adminHandler);
+            registerContext("/api/reload", adminHandler);
+            registerContext("/api/nodestatus", adminHandler);
 
-            // 为所有 API 路径注册 Handler，并添加 CORS Filter
-            httpServer.createContext("/api/exec", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/query", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/querynomap", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/lp", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/lpnomap", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/reload", new CorsHandlerWrapper(adminHandler, corsFilter));
-            httpServer.createContext("/api/nodestatus", new CorsHandlerWrapper(adminHandler, corsFilter));
+            registerContext("/api", keyHandler);
 
-            httpServer.createContext("/api", new CorsHandlerWrapper(keyHandler, corsFilter));
+            registerContext("/client", clientHandler);
 
-            // 【核心修复】注册独立的外部无鉴权路由，添加 CORS Filter
-            httpServer.createContext("/client", new CorsHandlerWrapper(clientHandler, corsFilter));
-
-            httpServer.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+            webExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            httpServer.setExecutor(webExecutor);
             httpServer.start();
+            return true;
         }
+        return false;
     }
 
-    private static void stopWebServer() {
+    private static void registerContext(String path, HttpHandler handler) {
+        HttpContext context = httpServer.createContext(path, handler);
+        context.getFilters().add(new CorsFilter(Config.CORS_ALLOWED_ORIGINS, Config.CORS_ALLOW_CREDENTIALS));
+    }
+
+    private static synchronized void stopWebServer() {
         if (httpServer != null) {
             httpServer.stop(1);
             httpServer = null;
         }
+        if (webExecutor != null) {
+            webExecutor.shutdownNow();
+            webExecutor = null;
+        }
     }
 
-    // ==================== 命令处理委托方法 ====================
+    private static void registerCommands() {
+        myConsole.registerCommand("key", "Manage keys", args -> {
+            if (args.isEmpty()) {
+                printKeyUsage();
+                return;
+            }
+            String subCmd = args.get(0).toLowerCase();
+            List<String> subArgs = args.subList(1, args.size());
+            try {
+                String result = switch (subCmd) {
+                    case "add" -> keyService.execAddKey(subArgs);
+                    case "set" -> keyService.execSetKey(subArgs);
+                    case "setconn" -> keyService.execSetConn(subArgs);
+                    case "setsingle" -> keyService.execSetSingle(subArgs);
+                    case "delsingle" -> keyService.execDelSingle(subArgs);
+                    case "listsingle" -> keyService.execListSingle(subArgs);
+                    case "map" -> keyService.execMapKey(subArgs);
+                    case "delmap" -> keyService.execDelMap(subArgs);
+                    case "delnode" -> keyService.execDelNode(subArgs);
+                    case "del" -> keyService.execDelKey(subArgs);
+                    case "enable" -> keyService.execEnable(subArgs, true);
+                    case "disable" -> keyService.execEnable(subArgs, false);
+                    case "link" -> keyService.execLinkKey(subArgs);
+                    case "listlink" -> keyService.execListLink(subArgs);
+                    case "list" -> {
+                        handleListKeys(subArgs);
+                        yield null;
+                    }
+                    case "lp" -> {
+                        handleLookupKey(subArgs);
+                        yield null;
+                    }
+                    case "web" -> keyService.execWeb(subArgs);
+                    case "setcbm" -> keyService.execSetCbm(subArgs);
+                    case "delcbm" -> keyService.execDelCbm(subArgs);
+                    case "listcbm" -> keyService.execListCbm(subArgs);
+                    default -> {
+                        ServerLogger.errorWithSource("Command", "nkm.error.unknownSubCommand", subCmd);
+                        printKeyUsage();
+                        yield null;
+                    }
+                };
+                if (result != null) myConsole.log("KeyManager", result);
+            } catch (Exception e) {
+                ServerLogger.error("Command", "nkm.error.execFail", e);
+            }
+        });
 
-    public static void handleTopLevelList() {
+        myConsole.registerCommand("web", "Manage Web", args -> {
+            try {
+                String res = keyService.execWeb(args);
+                myConsole.log("WebManager", res);
+            } catch (Exception e) {
+                ServerLogger.error("WebManager", "nkm.error.execFail", e);
+            }
+        });
+        myConsole.registerCommand("list", ServerLogger.getMessage("nkm.usage.help.listActive"), args -> handleTopLevelList());
+        myConsole.registerCommand("reload", "Reload System", args -> handleReload());
+        myConsole.registerCommand("stop", "Stop System", args -> System.exit(0));
+    }
+
+    private static void printKeyUsage() {
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
+        myConsole.log("Usage", "key setconn <key> <num> - Set max connections");
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
+        myConsole.log("Usage", "key delnode <nodeid> - Delete all mappings for a node");
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
+        myConsole.log("Usage", "key setsingle/delsingle/listsingle ... - Manage Single Mode");
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.cbm"));
+        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
+    }
+
+    private static void handleLookupKey(List<String> args) {
+        if (args.size() != 1) {
+            ServerLogger.warnWithSource("Usage", "nkm.usage.lp");
+            return;
+        }
+        String targetKey = args.get(0);
+        String realName = Database.getRealKeyName(targetKey);
+        if (realName == null) {
+            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
+            return;
+        }
+        printKeyTable(realName, false);
+    }
+
+    private static void handleListKeys(List<String> args) {
+        if (args.contains("active")) {
+            handleTopLevelList();
+            return;
+        }
+        boolean noMap = args.contains("nomap");
+        printKeyTable(null, noMap);
+    }
+
+    private static void printKeyTable(String targetKeyFilter, boolean noMap) {
+        List<Map<String, String>> rows = Database.getAllKeysRaw();
+        if (rows.isEmpty()) {
+            ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
+            return;
+        }
+        if (targetKeyFilter != null) {
+            List<Map<String, String>> filtered = new ArrayList<>();
+            for (Map<String, String> row : rows) {
+                if ("KEY".equals(row.get("type")) && targetKeyFilter.equals(row.get("name"))) {
+                    filtered.add(row);
+                } else if ("MAP".equals(row.get("type")) && targetKeyFilter.equals(row.get("parent_key"))) {
+                    filtered.add(row);
+                }
+            }
+            rows = filtered;
+            if (rows.isEmpty()) {
+                ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
+                return;
+            }
+        }
+        int maxNameLen = 10;
+        for (Map<String, String> row : rows) {
+            String n = row.get("name");
+            if (n != null) maxNameLen = Math.max(maxNameLen, n.length());
+        }
+        maxNameLen += 2;
+        String headerFmt, rowFmt;
+        if (noMap) {
+            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
+        } else {
+            headerFmt = "   %-7s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+            rowFmt = "   %-25s %-" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n");
+        String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90));
+        sb.append(separator).append("\n");
+        if (noMap) {
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
+        } else {
+            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
+        }
+        sb.append(separator).append("\n");
+        for (Map<String, String> row : rows) {
+            if ("KEY".equals(row.get("type"))) {
+                String mapCount = row.getOrDefault("map_count", "0");
+                if (noMap) {
+                    sb.append(String.format(rowFmt,
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web"), mapCount
+                    )).append("\n");
+                } else {
+                    sb.append(String.format(rowFmt,
+                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
+                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web")
+                    )).append("\n");
+                }
+            } else if ("MAP".equals(row.get("type"))) {
+                if (noMap) continue;
+                String mapIndent = "   " + " ".repeat(25) + " ".repeat(maxNameLen);
+                sb.append(mapIndent).append(row.get("map_str")).append("\n");
+            }
+        }
+        sb.append(separator);
+        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
+    }
+
+    private static void handleTopLevelList() {
         SessionManager sm = SessionManager.getInstance();
         Map<String, Map<String, String>> activeSessions = sm.getActiveSessionsSnapshot();
         if (activeSessions.isEmpty()) {
@@ -239,102 +422,11 @@ public class Application {
                     isFirstNode = false;
                 } else {
                     sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
+                    sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                 }
             }
+            sb.append(separator).append("\n");
         }
-        sb.append(separator);
-        if (myConsole != null) myConsole.log("KeyManager", sb.toString());
-    }
-
-    public static void handleListKeys(List<String> args) {
-        if (args.contains("active")) {
-            handleTopLevelList();
-            return;
-        }
-        boolean noMap = args.contains("nomap");
-        printKeyTable(null, noMap);
-    }
-
-    public static void handleLookupKey(List<String> args) {
-        if (args.size() != 1) {
-            ServerLogger.warnWithSource("Usage", "nkm.usage.lp");
-            return;
-        }
-        String targetKey = args.get(0);
-        String realName = Database.getRealKeyName(targetKey);
-        if (realName == null) {
-            ServerLogger.errorWithSource("KeyManager", "nkm.error.keyNotFound", targetKey);
-            return;
-        }
-        printKeyTable(realName, false);
-    }
-
-    private static void printKeyTable(String targetKeyFilter, boolean noMap) {
-        List<Map<String, String>> rows = Database.getAllKeysRaw();
-        if (rows.isEmpty()) {
-            ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
-            return;
-        }
-        if (targetKeyFilter != null) {
-            List<Map<String, String>> filtered = new ArrayList<>();
-            for (Map<String, String> row : rows) {
-                if ("KEY".equals(row.get("type")) && targetKeyFilter.equals(row.get("name"))) {
-                    filtered.add(row);
-                } else if ("MAP".equals(row.get("type")) && targetKeyFilter.equals(row.get("parent_key"))) {
-                    filtered.add(row);
-                }
-            }
-            rows = filtered;
-            if (rows.isEmpty()) {
-                ServerLogger.infoWithSource("KeyManager", "nkm.info.noKeys");
-                return;
-            }
-        }
-        int maxNameLen = 10;
-        for (Map<String, String> row : rows) {
-            String n = row.get("name");
-            if (n != null) maxNameLen = Math.max(maxNameLen, n.length());
-        }
-        maxNameLen += 2;
-        String headerFmt, rowFmt;
-        if (noMap) {
-            headerFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
-            rowFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s %-6s";
-        } else {
-            headerFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
-            rowFmt = "   %-7s % -" + maxNameLen + "s %-12s %-8s %-16s %-6s %-18s %-4s";
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n");
-        String separator = "-".repeat(maxNameLen + (noMap ? 100 : 90));
-        sb.append(separator).append("\n");
-        if (noMap) {
-            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB", "MAPS")).append("\n");
-        } else {
-            sb.append(String.format(headerFmt, "STATUS", "NAME", "BALANCE", "RATE", "PORT", "CONN", "EXPIRE", "WEB")).append("\n");
-        }
-        sb.append(separator).append("\n");
-        for (Map<String, String> row : rows) {
-            if ("KEY".equals(row.get("type"))) {
-                String mapCount = row.getOrDefault("map_count", "0");
-                if (noMap) {
-                    sb.append(String.format(rowFmt,
-                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
-                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web"), mapCount
-                    )).append("\n");
-                } else {
-                    sb.append(String.format(rowFmt,
-                            row.get("status_icon"), row.get("name"), row.get("balance"), row.get("rate"),
-                            row.get("port"), row.get("conns"), row.get("expire"), row.get("web")
-                    )).append("\n");
-                }
-            } else if ("MAP".equals(row.get("type"))) {
-                if (noMap) continue;
-                String mapIndent = "   " + " ".repeat(7) + " ".repeat(maxNameLen);
-                sb.append(mapIndent).append(row.get("map_str")).append("\n");
-            }
-        }
-        sb.append(separator);
         if (myConsole != null) myConsole.log("KeyManager", sb.toString());
     }
 }

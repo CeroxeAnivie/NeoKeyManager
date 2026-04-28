@@ -154,6 +154,24 @@ public class SessionManager {
         return tryRegisterSessionInternal(realKeyName, displayKeyName, nodeId, port, maxConnections, isAliasSingle, connectionDetail);
     }
 
+    public PortReservation reserveFirstFreePort(String realKeyName, String displayKeyName, String nodeId,
+                                                String portRange, int maxConnections, boolean isAliasSingle) {
+        if (NodeAuthManager.getInstance().authenticateAndGetAlias(nodeId) == null) {
+            return PortReservation.fail("Node Unauthorized");
+        }
+
+        synchronized (sessions) {
+            String finalPort = findFirstFreePort(realKeyName, portRange, nodeId);
+            if (finalPort == null) {
+                return PortReservation.fail("No free ports in range " + portRange);
+            }
+            if (!tryRegisterSessionInternal(realKeyName, displayKeyName, nodeId, finalPort, maxConnections, isAliasSingle, null)) {
+                return PortReservation.fail("Global Limit Reached");
+            }
+            return PortReservation.success(finalPort);
+        }
+    }
+
     private boolean tryRegisterSessionInternal(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle, String connectionDetail) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.computeIfAbsent(realKeyName, k -> new ConcurrentHashMap<>());
         String sessionKey = getSessionKey(nodeId, displayKeyName);
@@ -282,8 +300,9 @@ public class SessionManager {
     public void releaseSession(String realKeyName, String nodeId) {
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap != null) {
+            String targetPrefix = nodeId.toLowerCase() + "|";
             synchronized (nodeMap) {
-                nodeMap.entrySet().removeIf(e -> e.getKey().startsWith(nodeId + "|"));
+                nodeMap.entrySet().removeIf(e -> e.getKey().toLowerCase().startsWith(targetPrefix));
                 if (nodeMap.isEmpty()) sessions.remove(realKeyName);
             }
         }
@@ -401,6 +420,16 @@ public class SessionManager {
                 if (detail != null) return p + detail;
                 return p;
             }).collect(Collectors.joining("  "));
+        }
+    }
+
+    public record PortReservation(boolean success, String port, String reason) {
+        private static PortReservation success(String port) {
+            return new PortReservation(true, port, null);
+        }
+
+        private static PortReservation fail(String reason) {
+            return new PortReservation(false, null, reason);
         }
     }
 }

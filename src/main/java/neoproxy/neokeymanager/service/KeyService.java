@@ -1,6 +1,7 @@
 package neoproxy.neokeymanager.service;
 
 import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.manager.NodeAuthManager;
 import neoproxy.neokeymanager.manager.SessionManager;
 import neoproxy.neokeymanager.utils.ServerLogger;
 import neoproxy.neokeymanager.utils.Utils;
@@ -9,12 +10,22 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.ResolverStyle;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class KeyService {
 
     private static final Pattern PORT_INPUT_REGEX = Pattern.compile("^(\\d+)(?:-(\\d+))?$");
+    private static final Pattern TIME_INPUT_REGEX = Pattern.compile("^\\d{4}/\\d{2}/\\d{2}-\\d{2}:\\d{2}$");
+    private static final DateTimeFormatter TIME_FORMATTER = new DateTimeFormatterBuilder()
+            .appendPattern("uuuu/MM/dd-HH:mm")
+            .toFormatter()
+            .withResolverStyle(ResolverStyle.STRICT);
+    private static final DateTimeFormatter TIME_OUTPUT_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd-HH:mm");
 
     public String execAddKey(List<String> args) {
         if (args.size() != 5 && args.size() != 6) {
@@ -55,7 +66,7 @@ public class KeyService {
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
-            ServerLogger.error("KeyService", "AddKey Failed", e);
+            ServerLogger.error("KeyService", "nkm.error.addKeyFail", e);
             throw new RuntimeException("System error while adding key: " + e.getMessage());
         }
     }
@@ -155,7 +166,7 @@ public class KeyService {
                 }
             } catch (Exception e) {
                 failed.add(name + "(Error)");
-                ServerLogger.error("KeyService", "Batch delete failed for " + name, e);
+                ServerLogger.error("KeyService", "nkm.error.batchDeleteFail", e, name);
             }
         }
 
@@ -223,7 +234,15 @@ public class KeyService {
         String mapPortStr = args.get(args.size() - 1);
         String mapPort = validateAndFormatPortInput(mapPortStr);
 
-        List<String> targetNodes = args.subList(1, args.size() - 1);
+        NodeAuthManager nodeAuthManager = NodeAuthManager.getInstance();
+        List<String> targetNodes = new ArrayList<>();
+        for (String nodeId : args.subList(1, args.size() - 1)) {
+            String canonicalNodeId = nodeAuthManager.getCanonicalRealId(nodeId);
+            if (canonicalNodeId == null) {
+                throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.nodeNotRegistered", nodeId));
+            }
+            targetNodes.add(canonicalNodeId);
+        }
 
         int count = 0;
         for (String nodeId : targetNodes) {
@@ -491,17 +510,27 @@ public class KeyService {
     }
 
     private boolean parseBooleanStrict(String str) {
-        if (str == null) return false;
+        if (str == null) throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.invalidParam", "boolean", "null"));
         String s = str.trim().toLowerCase();
-        return s.equals("true") || s.equals("1") || s.equals("on") || s.equals("enable");
+        if (s.equals("true") || s.equals("1") || s.equals("on") || s.equals("enable") || s.equals("enabled")) {
+            return true;
+        }
+        if (s.equals("false") || s.equals("0") || s.equals("off") || s.equals("disable") || s.equals("disabled")) {
+            return false;
+        }
+        throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.invalidParam", "boolean", str));
     }
 
     private String correctInputTime(String time) {
         if (time == null || time.isBlank()) return null;
         if (time.equalsIgnoreCase("PERMANENT")) return "PERMANENT";
-        if (!time.matches("^\\d{4}/\\d{1,2}/\\d{1,2}-\\d{1,2}:\\d{1,2}$")) {
+        if (!TIME_INPUT_REGEX.matcher(time).matches()) {
             throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.timeFormat", time));
         }
-        return time;
+        try {
+            return LocalDateTime.parse(time, TIME_FORMATTER).format(TIME_OUTPUT_FORMATTER);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.timeFormat", time));
+        }
     }
 }

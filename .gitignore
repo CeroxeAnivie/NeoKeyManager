@@ -45,4 +45,5 @@ neokey_db-wal
 neokey_db
 server.properties
 NodeAuth.json
+!src/main/resources/templates/NodeAuth.json
 dependency-reduced-pom.xml
