@@ -32,7 +32,7 @@ public class ServerLogger {
         }
     }
 
-    // ==================== INFO ====================
+    // ==================== 信息 ====================
     public static void info(String key, Object... args) {
         log("INFO", "NeoKeyManager", key, args);
     }
@@ -41,7 +41,7 @@ public class ServerLogger {
         log("INFO", source, key, args);
     }
 
-    // ==================== WARN ====================
+    // ==================== 警告 ====================
     public static void warn(String key, Object... args) {
         log("WARN", "NeoKeyManager", key, args);
     }
@@ -50,7 +50,7 @@ public class ServerLogger {
         log("WARN", source, key, args);
     }
 
-    // ==================== ERROR ====================
+    // ==================== 错误 ====================
     public static void error(String key, Object... args) {
         log("ERROR", "NeoKeyManager", key, args);
     }
@@ -65,12 +65,12 @@ public class ServerLogger {
         }
     }
 
-    // 重载不带 Exception 的 errorWithSource
+    // 重载不带异常参数的 errorWithSource
     public static void errorWithSource(String source, String key, Object... args) {
         log("ERROR", source, key, args);
     }
 
-    // ==================== INTERNAL ====================
+    // ==================== 内部 ====================
     private static void log(String level, String source, String key, Object... args) {
         String message = getMessage(key, args);
         if (Application.myConsole != null) {
@@ -80,7 +80,7 @@ public class ServerLogger {
                 default -> Application.myConsole.log(source, message);
             }
         } else {
-            // Fallback before console init
+            // Console 初始化前的回退路径
             System.out.println("[" + source + "] " + message);
         }
     }

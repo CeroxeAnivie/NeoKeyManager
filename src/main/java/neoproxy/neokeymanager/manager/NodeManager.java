@@ -12,7 +12,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class NodeManager {
-    // 【核心修复】: 必须先初始化 MAPPER，再初始化 INSTANCE，否则会引发空指针异常！
+    // 【核心修复】：必须先初始化 MAPPER，再初始化 INSTANCE，否则会引发空指针异常！
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final NodeManager INSTANCE = new NodeManager();
 
@@ -78,8 +78,8 @@ public class NodeManager {
         NodeAuthManager authManager = NodeAuthManager.getInstance();
         String realId = trimToNull(info.realId);
         if (realId == null) {
-            // Legacy configs used the display name as the join key. Keep migration support,
-            // then normalize the runtime model to stable realId so display text can change safely.
+            // 旧配置使用 display name 作为关联键。这里保留迁移兼容，
+            // 然后将运行时模型归一化为稳定的 realId，确保展示文本可以安全变更。
             realId = authManager.getRealIdByDisplayName(info.name);
         } else {
             realId = authManager.getCanonicalRealId(realId);

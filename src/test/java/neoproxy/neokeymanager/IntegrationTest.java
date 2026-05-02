@@ -22,7 +22,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * NeoKeyManager Ultimate Test Suite (V21 - Bulletproof Self-Setup Edition)
+ * NeoKeyManager 终极测试套件（V21 - 防弹自举版）
  */
 public class IntegrationTest {
 
@@ -151,7 +151,7 @@ public class IntegrationTest {
         Files.writeString(propsPath, content);
     }
 
-    // ==================== Phase 1-11 ====================
+    // ==================== 阶段 1-11 ====================
 
     private static void testKeyLifecycle() throws Exception {
         printHeader("1. Key Lifecycle");
@@ -270,7 +270,7 @@ public class IntegrationTest {
         System.out.println("   -> System Reload [OK]");
     }
 
-    // ==================== Phase 12 ====================
+    // ==================== 阶段 12 ====================
 
     private static void testPublicNodeListAndRateLimit() throws Exception {
         printHeader("12. Public Node List & Rate Limiting (File Modify + API Reload)");
@@ -340,7 +340,7 @@ public class IntegrationTest {
         System.out.println("   -> IP Rate Limiting (10 requests/day) [OK]");
     }
 
-    // ==================== Phase 13 ====================
+    // ==================== 阶段 13 ====================
 
     private static void testAdminNodeStatusAPI() throws Exception {
         printHeader("13. Admin Node Status API");

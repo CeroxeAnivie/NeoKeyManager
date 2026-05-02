@@ -45,14 +45,14 @@ public class SessionManager {
     }
 
     /**
-     * [最终修复] 智能端口获取 (节点隔离版)
+     * [最终修复] 智能端口获取（节点隔离版）
      * 逻辑：端口占用检查仅限于 requestingNodeId 内部。
      * 不同节点的相同端口互不干扰。
      */
     public String findFirstFreePort(String realKeyName, String portRange, String requestingNodeId) {
         if (portRange == null) return null;
 
-        // ==================== 1. 静态端口 (Static) ====================
+        // ==================== 1. 静态端口（Static） ====================
         // 规则：在该节点上，抢占模式。允许自己重用，拒绝别人。
         if (!portRange.contains("-")) {
             // 检查该节点上，是否被【其他 Key】占用了
@@ -62,14 +62,14 @@ public class SessionManager {
             return portRange; // 没人占，或者是我自己占的 -> 允许
         }
 
-        // ==================== 2. 动态端口 (Dynamic) ====================
+        // ==================== 2. 动态端口（Dynamic） ====================
         // 规则：在该节点上，必须分配绝对空闲的端口。
         // 即使是我自己占用了 58000，为了防止端口冲突，也必须分配 58001。
         String[] parts = portRange.split("-");
         int start = Integer.parseInt(parts[0]);
         int end = Integer.parseInt(parts[1]);
 
-        // 获取【该节点】上所有忙碌的端口 (包括我自己占用的)
+        // 获取【该节点】上所有忙碌的端口（包括我自己占用的）
         Set<String> nodeBusyPorts = getPortsBusyOnNode(requestingNodeId);
 
         for (int p = start; p <= end; p++) {
@@ -85,7 +85,7 @@ public class SessionManager {
     }
 
     /**
-     * 辅助：获取特定 NodeID 上所有活跃的端口 (无论属于哪个 Key)
+     * 辅助：获取特定 NodeID 上所有活跃的端口（无论属于哪个 Key）
      */
     private Set<String> getPortsBusyOnNode(String targetNodeId) {
         Set<String> busy = new HashSet<>();
@@ -120,7 +120,7 @@ public class SessionManager {
         for (Map.Entry<String, ConcurrentHashMap<String, NodeSession>> keyEntry : sessions.entrySet()) {
             String otherKeyName = keyEntry.getKey();
 
-            // 如果是同一个 Key (自己)，跳过检查 -> 允许重连
+            // 如果是同一个 Key（自己），跳过检查 -> 允许重连
             if (otherKeyName.equals(myRealKeyName)) continue;
 
             ConcurrentHashMap<String, NodeSession> nodeMap = keyEntry.getValue();
@@ -142,7 +142,7 @@ public class SessionManager {
         return false;
     }
 
-    // ... tryRegisterSession, keepAlive (保持鉴权和 connectionDetail 逻辑) ...
+    // ... tryRegisterSession, keepAlive（保持鉴权和 connectionDetail 逻辑）...
 
     public boolean tryRegisterSession(String realKeyName, String displayKeyName, String nodeId, String port, int maxConnections, boolean isAliasSingle) {
         if (NodeAuthManager.getInstance().authenticateAndGetAlias(nodeId) == null) return false;
@@ -236,7 +236,7 @@ public class SessionManager {
         // 为了严谨，建议改为：
         ConcurrentHashMap<String, NodeSession> nodeMap = sessions.get(realKeyName);
         if (nodeMap == null) return false;
-        NodeSession s = nodeMap.get(getSessionKey(nodeId, realKeyName)); // 假设 displayKey=realKeyName, 简化
+        NodeSession s = nodeMap.get(getSessionKey(nodeId, realKeyName)); // 假设 displayKey=realKeyName，简化
         // 如果要做精确查询，需要遍历 nodeMap 找匹配 nodeId 的 session
         long now = System.currentTimeMillis();
         String targetLower = nodeId.toLowerCase();

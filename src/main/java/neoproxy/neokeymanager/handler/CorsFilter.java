@@ -10,10 +10,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * HTTP-server-native CORS filter.
+ * 基于 HTTP server 原生实现的 CORS filter。
  *
- * CORS is kept at the routing boundary instead of inside business handlers so
- * preflight requests never consume command or authentication code paths.
+ * 将 CORS 保持在路由边界而不是业务处理器内部，这样 preflight 请求就不会消耗命令或鉴权代码路径。
  */
 public final class CorsFilter extends Filter {
 

@@ -196,16 +196,16 @@ NKM 控制台支持以下指令。所有指令均即时生效，无需重启。
 
 ---
 
-## 🔌 HTTP API (DevOps)
+## 🔌 HTTP API（运维）
 
 NKM 提供了完整的 RESTful API 用于对接面板或计费系统。
 
 ### 1. 管理端 API (需验证)
-*   **Header**: 
+*   **请求头**:
     *   `Authorization: Bearer <ADMIN_TOKEN>`
     *   `X-Timestamp: <Unix时间戳>` (当前时间的秒级时间戳，有效期5分钟)
     *   `X-Signature: <HMAC-SHA256签名>` (见下方签名算法)
-*   **Base URL**: `http://ip:port`
+*   **基础 URL**: `http://ip:port`
 
 #### 请求签名算法
 所有管理端 API 请求必须携带有效的签名，防止请求被篡改和重放攻击。
@@ -216,7 +216,7 @@ NKM 提供了完整的 RESTful API 用于对接面板或计费系统。
 签名 = Base64(HMAC-SHA256(签名数据, ADMIN_TOKEN))
 ```
 
-**示例 (Python):**
+**示例（Python）：**
 ```python
 import hmac
 import hashlib
@@ -232,7 +232,7 @@ body = '{"args": ["user1", "1000", "PERMANENT", "30000", "50"]}'
 # 构造签名数据
 data = f"{method}|{path}|{timestamp}|{body}"
 
-# 计算 HMAC-SHA256
+    # 计算 HMAC-SHA256
 signature = base64.b64encode(
     hmac.new(admin_token.encode(), data.encode(), hashlib.sha256).digest()
 ).decode()
@@ -246,24 +246,24 @@ headers = {
 }
 ```
 
-| Method | Endpoint | Description | Payload Example |
+| 方法 | 接口 | 说明 | 请求体示例 |
 |:---|:---|:---|:---|
 | **POST** | `/api/exec/<cmd>` | 执行 CLI 等效指令 | `{"args": ["user1", "b=100"]}` |
-| **GET** | `/api/query` | 获取所有 Key 详情 (含 Map) | - |
+| **GET** | `/api/query` | 获取所有 Key 详情（含 Map） | - |
 | **GET** | `/api/lp/<name>` | 查询单个 Key | - |
 | **POST** | `/api/reload` | 热重载系统配置 | - |
 
 ### 2. 客户端 API (公开无鉴权)
 用于 NeoLink 客户端动态拉取在线节点。
 
-*   **Endpoint**: `GET /client/nodelist`
+*   **接口**: `GET /client/nodelist`
 *   **防护机制**: 基于真实 IP 的滑动窗口限流 (限制 10次/天/IP)。
 *   **返回机制**: 仅返回 `nodes.json` 中配置且**最近 1 分钟内有心跳上报**的存活节点。
 
 ---
 
-## 📝 License
+## 📝 许可证
 
 MIT License.
 
-*Designed & Developed by CeroxeAnivie for the NeoProxyServer Ecosystem.*
+*由 CeroxeAnivie 设计并开发，面向 NeoProxyServer 生态。*

@@ -22,10 +22,10 @@ public class NodeAuthManager {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static NodeAuthManager INSTANCE = new NodeAuthManager();
 
-    // Key: Lowercase Real NodeID, Value: NodeConfig
+    // Key：小写的 real NodeID，Value：NodeConfig
     private final ConcurrentHashMap<String, NodeConfig> authMap = new ConcurrentHashMap<>();
 
-    // 反向映射字典: DisplayName -> Lowercase Real NodeID
+    // 反向映射字典：DisplayName -> 小写的 real NodeID
     private final ConcurrentHashMap<String, String> displayNameToRealIdMap = new ConcurrentHashMap<>();
     private final Set<String> ambiguousDisplayNames = ConcurrentHashMap.newKeySet();
 
@@ -45,8 +45,8 @@ public class NodeAuthManager {
     }
 
     /**
-     * 验证节点身份并获取别名
-     * 逻辑：先从缓存查，没有则重载文件查。若文件中不存在，则拒绝。
+     * 验证节点身份并获取别名。
+     * 逻辑：先从缓存查，没有则重载文件再查。若文件中仍不存在，则拒绝。
      */
     public String authenticateAndGetAlias(String realNodeId) {
         if (realNodeId == null || realNodeId.isBlank()) return null;

@@ -16,12 +16,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Centralized guard for administrator APIs.
+ * 管理端 API 的统一安全守卫。
  *
- * The admin token is intentionally reused as the HMAC key because README and
- * deployment configuration expose only one administrator secret. Keeping the
- * implementation aligned with that public contract avoids a hidden second
- * credential that operators cannot rotate safely.
+ * 这里刻意复用 admin token 作为 HMAC key，因为 README 和部署配置只暴露了一份管理员密钥。
+ * 让实现与这个公开契约保持一致，可以避免再引入一个运维侧无法安全轮换的隐藏凭证。
  */
 public final class SecurityManager {
 

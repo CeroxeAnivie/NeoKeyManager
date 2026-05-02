@@ -87,7 +87,7 @@ public class Application {
             Config.load(false);
             // 2. 重载节点鉴权白名单
             NodeAuthManager.getInstance().load();
-            // 3. 热重载公开节点列表 (nodes.json)
+            // 3. 热重载公开节点列表（nodes.json）
             NodeManager.getInstance().loadNodesJson();
             // 4. 重启 Web 服务
             if (!startWebServer()) {
@@ -352,7 +352,7 @@ public class Application {
             return;
         }
 
-        // Pre-filter invalid nodes out of the snapshot list
+        // 预先从快照列表中过滤掉无效节点
         Map<String, Map<String, String>> filteredSessions = new java.util.HashMap<>();
         for (Map.Entry<String, Map<String, String>> entry : activeSessions.entrySet()) {
             Map<String, String> validNodes = new java.util.HashMap<>();

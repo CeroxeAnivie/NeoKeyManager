@@ -472,7 +472,7 @@ public class KeyService {
         return sb.toString();
     }
 
-    // ==================== Helpers ====================
+    // ==================== 辅助方法 ====================
 
     private String validateAndFormatPortInput(String portInput) {
         if (portInput == null || portInput.isBlank()) throw new IllegalArgumentException("Port cannot be empty");

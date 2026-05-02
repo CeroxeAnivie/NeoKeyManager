@@ -70,7 +70,7 @@ public class Database {
 
             // [CRITICAL] 建立常驻连接，并进行 SQLite 核心性能调优
             // 这里对应参考代码的 DatabaseContext 构造函数逻辑
-            // [性能优化] 保持一个连接以维持 WAL 共享内存映射 (Shared-Memory)，减少系统调用开销
+            // [性能优化] 保持一个连接以维持 WAL 共享内存映射（Shared-Memory），减少系统调用开销
             closeKeepAliveConnection();
             Connection keepAliveConn = DriverManager.getConnection(getDbUrl());
             keepAliveConnection = keepAliveConn;
@@ -113,7 +113,7 @@ public class Database {
                             )
                         """);
 
-                // [DIALECT] SQLite 自增主键的特殊写法: INTEGER PRIMARY KEY AUTOINCREMENT
+                // [DIALECT] SQLite 自增主键的特殊写法：INTEGER PRIMARY KEY AUTOINCREMENT
                 stmt.execute("""
                             CREATE TABLE IF NOT EXISTS node_ports (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -383,7 +383,7 @@ public class Database {
                 - flushingTraffic.getOrDefault(realName, 0.0);
     }
 
-    // ==================== Traffic Buffer Logic ====================
+    // ==================== 流量缓冲逻辑 ====================
 
     private static void flushTrafficBuffer() {
         if (trafficBuffer.isEmpty()) return;
@@ -775,7 +775,7 @@ public class Database {
     public static List<String> getSingleKeys() {
         List<String> list = new ArrayList<>();
         try (Connection conn = getConnection()) {
-            // SQLite boolean maps to 1 for TRUE
+            // SQLite boolean 在 TRUE 时映射为 1
             try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery("SELECT name FROM keys WHERE is_single = 1")) {
                 while (rs.next()) list.add(rs.getString("name") + " (RealKey)");
             }

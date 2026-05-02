@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
  */
 public class Utils {
 
-    // ==================== JSON Logic (Jackson) ====================
+    // ==================== JSON 逻辑（Jackson） ====================
     private static final ObjectMapper MAPPER;
     private static final Pattern PORT_RANGE_PATTERN = Pattern.compile("^(\\d+)(?:-(\\d+))?$");
 
@@ -59,7 +59,7 @@ public class Utils {
         return MAPPER.readValue(is, clazz);
     }
 
-    // ==================== Param & Port Logic ====================
+    // ==================== 参数与端口逻辑 ====================
 
     /**
      * 专门解析流量同步数据，兼容不同格式
@@ -83,7 +83,7 @@ public class Utils {
             String[] entry = param.split("=", 2);
             if (entry.length > 0) {
                 String key = URLDecoder.decode(entry[0], StandardCharsets.UTF_8);
-                // 只有存在值时才放入map，没有值时key不存在（返回null）
+                // 只有存在值时才放入 map，没有值时 key 不存在（返回 null）
                 if (entry.length > 1) {
                     result.put(key, URLDecoder.decode(entry[1], StandardCharsets.UTF_8));
                 }

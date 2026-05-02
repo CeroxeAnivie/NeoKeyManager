@@ -26,7 +26,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * S-Level AdminHandler
+ * S 级 AdminHandler
  * 统一管理入口，确保所有管理操作都经过鉴权和统一的路由分发。
  */
 public class AdminHandler implements HttpHandler {
@@ -76,11 +76,11 @@ public class AdminHandler implements HttpHandler {
             } else if ((path.startsWith("/api/lp/") || path.startsWith("/api/lpnomap/")) && "GET".equals(method)) {
                 handleLookup(exchange, path);
             } else if (path.equals("/api/reload") && ("POST".equals(method) || "GET".equals(method))) {
-                // S-Level Add: 允许通过 API 重载系统配置
+                // S-Level Add：允许通过 API 重载系统配置
                 Application.handleReload();
                 sendJson(exchange, 200, new AdminResponse(true, "System Reloaded", null));
             } else if (path.equals("/api/nodestatus") && "GET".equals(method)) {
-                // [新增] 路由: 获得所有的每个节点是否在线的状态
+                // [新增] 路由：获取所有节点是否在线的状态
                 handleGetNodeStatus(exchange);
             } else {
                 sendJson(exchange, 404, new AdminResponse(false, "Endpoint not found", null));
@@ -120,7 +120,7 @@ public class AdminHandler implements HttpHandler {
         List<String> args = (req != null && req.args != null) ? req.args : Collections.emptyList();
 
         try {
-            // Logic Closure: 确保所有 Main 中可用的命令（除 exit 外）这里都能用
+            // 逻辑闭环：确保所有 Main 中可用的命令（除 exit 外）这里都能用
             String resultMessage = switch (cmd) {
                 case "add" -> keyService.execAddKey(args);
                 case "set" -> keyService.execSetKey(args);
@@ -141,7 +141,7 @@ public class AdminHandler implements HttpHandler {
                 case "delsingle" -> keyService.execDelSingle(args);
                 case "listsingle" -> keyService.execListSingle(args);
 
-                // NEW: Web command exposure
+                // NEW：暴露 Web 命令
                 case "web" -> keyService.execWeb(args);
 
                 case "setcbm" -> keyService.execSetCbm(args);
@@ -154,10 +154,10 @@ public class AdminHandler implements HttpHandler {
             sendJson(exchange, 200, new AdminResponse(true, resultMessage, null));
 
         } catch (IllegalArgumentException e) {
-            // 业务逻辑错误 (参数不对，Key已存在等) -> 409 Conflict
+            // 业务逻辑错误（参数不对、Key 已存在等）-> 409 Conflict
             sendJson(exchange, 409, new AdminResponse(false, e.getMessage(), null));
         } catch (Exception e) {
-            // 系统错误 (DB挂了等) -> 500
+            // 系统错误（DB 挂了等）-> 500
             ServerLogger.error("AdminExec", "nkm.error.commandFailed", e, cmd);
             sendJson(exchange, 500, new AdminResponse(false, "Execution failed: " + e.getMessage(), null));
         }
