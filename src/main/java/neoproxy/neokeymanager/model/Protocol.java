@@ -28,6 +28,9 @@ public class Protocol {
 
     public static class NodeStatusPayload implements Serializable {
         public String nodeId;
+        public String address;
+        public int hookPort;
+        public int connectPort;
         public String version;
         public long timestamp;
         public int activeTunnels;
@@ -78,5 +81,9 @@ public class Protocol {
         public String icon;
         public int HOST_HOOK_PORT;
         public int HOST_CONNECT_PORT;
+        public String version;
+        public boolean online;
+        public long lastSeen;
+        public int activeTunnels;
     }
 }

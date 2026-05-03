@@ -178,12 +178,12 @@ public class SessionManager {
 
         synchronized (nodeMap) {
             if (isAliasSingle && isAliasActiveGlobally(nodeMap, displayKeyName, sessionKey)) {
-                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, nodeId);
+                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", displayKeyName, getNodeDisplayName(nodeId));
                 return false;
             }
 
             if (Database.isNameSingle(realKeyName) && isPoolActiveGlobally(nodeMap, sessionKey)) {
-                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", "Pool:" + realKeyName, nodeId);
+                ServerLogger.warnWithSource("Session", "nkm.session.blockSingle", "Pool:" + realKeyName, getNodeDisplayName(nodeId));
                 return false;
             }
 
@@ -290,7 +290,7 @@ public class SessionManager {
             synchronized (nodeMap) {
                 NodeSession removed = nodeMap.remove(targetSessionKey);
                 if (removed != null) {
-                    ServerLogger.infoWithSource("Session", "nkm.session.released", displayKey, nodeId);
+                    ServerLogger.infoWithSource("Session", "nkm.session.released", displayKey, getNodeDisplayName(nodeId));
                 }
                 if (nodeMap.isEmpty()) sessions.remove(realKeyName);
             }
@@ -317,7 +317,7 @@ public class SessionManager {
                 if (nodeMap.isEmpty()) sessions.remove(realKeyName);
             }
         });
-        ServerLogger.infoWithSource("Session", "nkm.session.released", "All", nodeId);
+        ServerLogger.infoWithSource("Session", "nkm.session.released", "All", getNodeDisplayName(nodeId));
     }
 
     public void forceReleaseKey(String realKeyName) {
@@ -343,7 +343,7 @@ public class SessionManager {
             s.activePorts.entrySet().removeIf(e -> (now - e.getValue()) > Protocol.ZOMBIE_TIMEOUT_MS);
             if (s.activePorts.isEmpty()) {
                 String nodeId = sKey.contains("|") ? sKey.split("\\|")[0] : "unknown";
-                ServerLogger.infoWithSource("Session", "nkm.session.timeout", s.displayKey, nodeId);
+                ServerLogger.infoWithSource("Session", "nkm.session.timeout", s.displayKey, getNodeDisplayName(nodeId));
                 it.remove();
             }
         }
@@ -362,9 +362,13 @@ public class SessionManager {
 
     private void logConnection(String displayKey, String nodeId, String port, NodeSession session) {
         if (!"INIT".equals(port) && !session.hasLogged(port)) {
-            ServerLogger.infoWithSource("Session", "nkm.session.connected", displayKey, nodeId, port);
+            ServerLogger.infoWithSource("Session", "nkm.session.connected", displayKey, getNodeDisplayName(nodeId), port);
             session.markLogged(port);
         }
+    }
+
+    private String getNodeDisplayName(String nodeId) {
+        return NodeAuthManager.getInstance().getAlias(nodeId);
     }
 
     private static class NodeSession {

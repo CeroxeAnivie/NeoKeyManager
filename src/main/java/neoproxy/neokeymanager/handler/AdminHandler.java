@@ -11,6 +11,7 @@ import neoproxy.neokeymanager.model.AdminDTOs.AdminResponse;
 import neoproxy.neokeymanager.model.AdminDTOs.ExecRequest;
 import neoproxy.neokeymanager.model.AdminDTOs.KeyDetail;
 import neoproxy.neokeymanager.model.AdminDTOs.NodeStatusDetail;
+import neoproxy.neokeymanager.model.Protocol;
 import neoproxy.neokeymanager.service.KeyService;
 import neoproxy.neokeymanager.utils.ServerLogger;
 import neoproxy.neokeymanager.utils.Utils;
@@ -18,6 +19,7 @@ import neoproxy.neokeymanager.utils.Utils;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,6 +35,7 @@ public class AdminHandler implements HttpHandler {
 
     private static final Pattern EXEC_PATH_REGEX = Pattern.compile("^/api/exec/([^/]+)$");
     private static final Pattern LP_PATH_REGEX = Pattern.compile("^/api/(lp|lpnomap)/([^/]+)$");
+    private static final int MAX_REQUEST_BODY_BYTES = 1024 * 1024;
     private final KeyService keyService = new KeyService();
 
     @Override
@@ -46,14 +49,17 @@ public class AdminHandler implements HttpHandler {
                 return;
             }
 
-            String bodyText = readBody(exchange);
-
             String auth = exchange.getRequestHeaders().getFirst("Authorization");
             if (!SecurityManager.constantTimeEquals(auth, "Bearer " + Config.ADMIN_TOKEN)) {
                 securityManager.recordAuthFailure(clientIp);
                 sendJson(exchange, 401, new AdminResponse(false, "Unauthorized", null));
                 return;
             }
+
+            String path = exchange.getRequestURI().getPath();
+            String method = exchange.getRequestMethod();
+            boolean expectsBody = path.startsWith("/api/exec/") && "POST".equals(method);
+            String bodyText = expectsBody ? readBody(exchange, MAX_REQUEST_BODY_BYTES) : "";
 
             SecurityManager.SignatureValidationResult signatureResult = securityManager.validateSignature(exchange, bodyText);
             if (!signatureResult.valid()) {
@@ -63,9 +69,6 @@ public class AdminHandler implements HttpHandler {
             }
 
             securityManager.recordAuthSuccess(clientIp);
-
-            String path = exchange.getRequestURI().getPath();
-            String method = exchange.getRequestMethod();
 
             if (path.startsWith("/api/exec/") && "POST".equals(method)) {
                 handleExec(exchange, path, bodyText);
@@ -86,6 +89,11 @@ public class AdminHandler implements HttpHandler {
                 sendJson(exchange, 404, new AdminResponse(false, "Endpoint not found", null));
             }
 
+        } catch (RequestTooLargeException e) {
+            try {
+                sendJson(exchange, 413, new AdminResponse(false, e.getMessage(), null));
+            } catch (IOException ignored) {
+            }
         } catch (Exception e) {
             ServerLogger.error("AdminAPI", "nkm.error.unhandled", e);
             try {
@@ -95,9 +103,20 @@ public class AdminHandler implements HttpHandler {
         }
     }
 
-    private String readBody(HttpExchange exchange) throws IOException {
+    private String readBody(HttpExchange exchange, int maxBytes) throws IOException {
         try (InputStream body = exchange.getRequestBody()) {
-            return new String(body.readAllBytes(), StandardCharsets.UTF_8);
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream(Math.min(8192, maxBytes));
+            byte[] chunk = new byte[4096];
+            int total = 0;
+            int read;
+            while ((read = body.read(chunk)) != -1) {
+                total += read;
+                if (total > maxBytes) {
+                    throw new RequestTooLargeException("Request body too large");
+                }
+                buffer.write(chunk, 0, read);
+            }
+            return buffer.toString(StandardCharsets.UTF_8);
         }
     }
 
@@ -202,8 +221,19 @@ public class AdminHandler implements HttpHandler {
 
         List<NodeStatusDetail> result = new ArrayList<>();
         for (NodeAuthManager.NodeConfig node : allNodes) {
-            boolean isOnline = nodeManager.isNodeOnline(node.realId);
-            result.add(new NodeStatusDetail(node.realId, node.displayName, isOnline));
+            Protocol.PublicNodeInfo info = nodeManager.getNodeInfo(node.realId);
+            boolean isOnline = info != null && info.online;
+            result.add(new NodeStatusDetail(
+                    node.realId,
+                    node.displayName,
+                    isOnline,
+                    info == null ? null : info.address,
+                    info == null ? 0 : info.HOST_HOOK_PORT,
+                    info == null ? 0 : info.HOST_CONNECT_PORT,
+                    info == null ? null : info.version,
+                    info == null ? 0 : info.activeTunnels,
+                    info == null ? 0L : info.lastSeen
+            ));
         }
 
         // [人性化] 排序：在线节点排在前面，同状态按展示名称字母排序
@@ -224,6 +254,12 @@ public class AdminHandler implements HttpHandler {
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
+        }
+    }
+
+    private static final class RequestTooLargeException extends IOException {
+        private RequestTooLargeException(String message) {
+            super(message);
         }
     }
 }

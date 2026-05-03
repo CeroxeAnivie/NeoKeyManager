@@ -1,5 +1,7 @@
 package neoproxy.neokeymanager.config;
 
+import neoproxy.neokeymanager.utils.ServerLogger;
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,7 +46,7 @@ public class Config {
                 try {
                     PORT = Integer.parseInt(p.trim());
                 } catch (NumberFormatException e) {
-                    System.err.println("[Config] Invalid SERVER_PORT format, using default: " + PORT);
+                    ServerLogger.warnWithSource("Config", "nkm.config.invalidServerPort", PORT);
                 }
             }
 
@@ -60,7 +62,7 @@ public class Config {
                 if (allowDbPathUpdate) {
                     DB_PATH = newDbPath;
                 } else if (!DB_PATH.equals(newDbPath)) {
-                    System.err.println("[Config] DB_PATH changes require restart. Keeping current DB_PATH: " + DB_PATH);
+                    ServerLogger.warnWithSource("Config", "nkm.config.dbPathRestartRequired", DB_PATH);
                 }
             }
 
@@ -91,7 +93,7 @@ public class Config {
             SSL_KEY_PATH = validateSslFile(keyPathRaw, "SSL_KEY_PATH");
 
             if ((SSL_CRT_PATH != null && SSL_KEY_PATH == null) || (SSL_CRT_PATH == null && SSL_KEY_PATH != null)) {
-                System.err.println("[Config] SSL configuration is incomplete (missing pair). Refusing to silently downgrade.");
+                ServerLogger.errorWithSource("Config", "nkm.config.sslIncomplete");
                 SSL_MISCONFIGURED = true;
                 SSL_CRT_PATH = null;
                 SSL_KEY_PATH = null;
@@ -100,7 +102,7 @@ public class Config {
             }
             ensureRuntimeTemplates();
         } catch (IOException e) {
-            System.err.println("[Config] Critical Error loading server.properties: " + e.getMessage());
+            ServerLogger.errorWithSource("Config", "nkm.config.loadFailed", e, e.getMessage());
         }
     }
 
@@ -111,24 +113,23 @@ public class Config {
         String trimmedPath = path.trim();
         File file = new File(trimmedPath);
         if (!file.exists() || !file.isFile()) {
-            System.err.println("[Config] Warning: " + configKey + " points to non-existent file: [" + trimmedPath + "]. HTTPS startup will be rejected.");
+            ServerLogger.warnWithSource("Config", "nkm.config.sslFileMissing", configKey, trimmedPath);
             return null;
         }
         return trimmedPath;
     }
 
     private static void extractDefaultConfig(File targetFile) {
-        System.out.println("[Config] 'server.properties' not found. Extracting default from resources...");
+        ServerLogger.infoWithSource("Config", "nkm.config.extractDefault");
         try (InputStream is = Config.class.getResourceAsStream(DEFAULT_CONFIG_RESOURCE)) {
             if (is == null) {
-                System.err.println("[Config] CRITICAL: '/server.properties' NOT FOUND in JAR resources!");
+                ServerLogger.errorWithSource("Config", "nkm.config.defaultMissing");
                 return;
             }
             Files.copy(is, targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            System.out.println("[Config] Successfully extracted default config to: " + targetFile.getAbsolutePath());
+            ServerLogger.infoWithSource("Config", "nkm.config.extractSuccess", targetFile.getAbsolutePath());
         } catch (IOException e) {
-            System.err.println("[Config] Failed to extract default configuration: " + e.getMessage());
-            e.printStackTrace();
+            ServerLogger.errorWithSource("Config", "nkm.config.extractFailed", e, e.getMessage());
         }
     }
 
@@ -152,14 +153,14 @@ public class Config {
             String resourcePath = TEMPLATE_RESOURCE_DIR + templateName;
             try (InputStream is = Config.class.getResourceAsStream(resourcePath)) {
                 if (is == null) {
-                    System.err.println("[Config] Template resource not found: " + resourcePath);
+                    ServerLogger.errorWithSource("Config", "nkm.config.templateMissing", resourcePath);
                     return;
                 }
                 Files.copy(is, targetFile.toPath());
-                System.out.println("[Config] Generated missing runtime template: " + targetFile.getAbsolutePath());
+                ServerLogger.infoWithSource("Config", "nkm.config.templateGenerated", targetFile.getAbsolutePath());
             }
         } catch (IOException e) {
-            System.err.println("[Config] Failed to generate template " + targetFile.getAbsolutePath() + ": " + e.getMessage());
+            ServerLogger.errorWithSource("Config", "nkm.config.templateGenerateFailed", e, targetFile.getAbsolutePath(), e.getMessage());
         }
     }
 

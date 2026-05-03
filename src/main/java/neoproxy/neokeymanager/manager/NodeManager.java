@@ -7,8 +7,12 @@ import neoproxy.neokeymanager.model.Protocol;
 import neoproxy.neokeymanager.utils.ServerLogger;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class NodeManager {
@@ -18,7 +22,7 @@ public class NodeManager {
 
     private static final long NODE_TIMEOUT_MS = 60000L;
     private final ConcurrentHashMap<String, Long> nodeLastSeenMap = new ConcurrentHashMap<>();
-    private volatile List<Protocol.PublicNodeInfo> publicNodesConfig = new ArrayList<>();
+    private volatile List<Protocol.PublicNodeInfo> publicNodesConfig = Collections.emptyList();
     private volatile boolean isConfigured = false;
 
     private NodeManager() {
@@ -53,6 +57,7 @@ public class NodeManager {
             }
 
             List<Protocol.PublicNodeInfo> normalizedNodes = new ArrayList<>();
+            nodeLastSeenMap.clear();
             for (Protocol.PublicNodeInfo info : loaded) {
                 Protocol.PublicNodeInfo normalized = normalizePublicNodeInfo(info);
                 if (normalized == null) {
@@ -60,10 +65,14 @@ public class NodeManager {
                     disableService();
                     return;
                 }
+                if (normalized.lastSeen > 0) {
+                    nodeLastSeenMap.put(nodeKey(normalized.realId), normalized.lastSeen);
+                }
+                normalized.online = isTimestampOnline(normalized.lastSeen);
                 normalizedNodes.add(normalized);
             }
 
-            publicNodesConfig = normalizedNodes;
+            publicNodesConfig = Collections.unmodifiableList(normalizedNodes);
             isConfigured = true;
             ServerLogger.infoWithSource("NodeManager", "nkm.nodes.jsonLoaded", publicNodesConfig.size(), file.getName());
         } catch (Exception e) {
@@ -87,11 +96,106 @@ public class NodeManager {
 
         if (realId == null) return null;
 
-        info.realId = realId;
-        if (trimToNull(info.name) == null) {
-            info.name = authManager.getAlias(realId);
+        Protocol.PublicNodeInfo normalized = copyPublicNodeInfo(info);
+        normalized.realId = realId;
+        if (trimToNull(normalized.name) == null) {
+            normalized.name = authManager.getAlias(realId);
         }
-        return info;
+        return normalized;
+    }
+
+    public synchronized boolean recordNodeStatus(Protocol.NodeStatusPayload payload) {
+        if (payload == null) return false;
+
+        NodeAuthManager authManager = NodeAuthManager.getInstance();
+        String realId = authManager.getCanonicalRealId(payload.nodeId);
+        String address = trimToNull(payload.address);
+        if (realId == null || address == null || !isValidPort(payload.hookPort) || !isValidPort(payload.connectPort)) {
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        String nodeKey = nodeKey(realId);
+        List<Protocol.PublicNodeInfo> nextConfig = new ArrayList<>();
+        Protocol.PublicNodeInfo updatedNode = null;
+        Protocol.PublicNodeInfo previousNode = null;
+
+        for (Protocol.PublicNodeInfo current : publicNodesConfig) {
+            Protocol.PublicNodeInfo copy = copyPublicNodeInfo(current);
+            if (nodeKey(copy.realId).equals(nodeKey)) {
+                previousNode = current;
+                updatedNode = copy;
+            } else {
+                copy.online = isNodeOnline(copy.realId);
+            }
+            nextConfig.add(copy);
+        }
+
+        if (updatedNode == null) {
+            updatedNode = new Protocol.PublicNodeInfo();
+            updatedNode.realId = realId;
+            updatedNode.name = authManager.getAlias(realId);
+            nextConfig.add(updatedNode);
+        }
+
+        updatedNode.address = address;
+        updatedNode.HOST_HOOK_PORT = payload.hookPort;
+        updatedNode.HOST_CONNECT_PORT = payload.connectPort;
+        updatedNode.version = trimToNull(payload.version);
+        updatedNode.activeTunnels = Math.max(0, payload.activeTunnels);
+        updatedNode.lastSeen = now;
+        updatedNode.online = true;
+
+        publicNodesConfig = Collections.unmodifiableList(nextConfig);
+        isConfigured = true;
+        nodeLastSeenMap.put(nodeKey, now);
+
+        persistNodesJson(nextConfig);
+        if (hasRuntimeEndpointChanged(previousNode, address, payload.hookPort, payload.connectPort)) {
+            ServerLogger.infoWithSource("NodeManager", "nkm.nodes.statusUpdated",
+                    realId, address, payload.hookPort, payload.connectPort);
+        }
+        return true;
+    }
+
+    private void persistNodesJson(List<Protocol.PublicNodeInfo> nodes) {
+        if (Config.NODE_JSON_FILE == null || Config.NODE_JSON_FILE.isBlank()) {
+            ServerLogger.errorWithSource("NodeManager", "nkm.nodes.jsonInvalid", "NODE_JSON_FILE");
+            return;
+        }
+        File file = new File(Config.NODE_JSON_FILE);
+        try {
+            File parent = file.getAbsoluteFile().getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                throw new IOException("Unable to create directory: " + parent.getAbsolutePath());
+            }
+            MAPPER.writerWithDefaultPrettyPrinter().writeValue(file, toPersistedNodeConfig(nodes));
+        } catch (Exception e) {
+            ServerLogger.error("NodeManager", "nkm.nodes.jsonSaveFail", e, file.getAbsolutePath());
+        }
+    }
+
+    private List<Map<String, Object>> toPersistedNodeConfig(List<Protocol.PublicNodeInfo> nodes) {
+        List<Map<String, Object>> persistedNodes = new ArrayList<>();
+        for (Protocol.PublicNodeInfo node : nodes) {
+            if (node == null) continue;
+
+            Map<String, Object> persistedNode = new LinkedHashMap<>();
+            persistedNode.put("realId", node.realId);
+            persistedNode.put("name", node.name);
+            persistedNode.put("address", node.address);
+            if (trimToNull(node.icon) != null) {
+                persistedNode.put("icon", node.icon);
+            }
+            persistedNode.put("HOST_HOOK_PORT", node.HOST_HOOK_PORT);
+            persistedNode.put("HOST_CONNECT_PORT", node.HOST_CONNECT_PORT);
+            persistedNodes.add(persistedNode);
+        }
+        return persistedNodes;
+    }
+
+    private boolean isValidPort(int port) {
+        return port >= 1 && port <= 65535;
     }
 
     private String trimToNull(String value) {
@@ -100,8 +204,54 @@ public class NodeManager {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private String nodeKey(String realNodeId) {
+        return realNodeId == null ? "" : realNodeId.toLowerCase().trim();
+    }
+
+    private boolean hasRuntimeEndpointChanged(Protocol.PublicNodeInfo previousNode,
+                                              String address,
+                                              int hookPort,
+                                              int connectPort) {
+        if (previousNode == null) {
+            return true;
+        }
+        return !sameText(previousNode.address, address)
+                || previousNode.HOST_HOOK_PORT != hookPort
+                || previousNode.HOST_CONNECT_PORT != connectPort;
+    }
+
+    private boolean sameText(String left, String right) {
+        String normalizedLeft = trimToNull(left);
+        String normalizedRight = trimToNull(right);
+        if (normalizedLeft == null) {
+            return normalizedRight == null;
+        }
+        return normalizedLeft.equals(normalizedRight);
+    }
+
+    private boolean isTimestampOnline(long lastSeen) {
+        return lastSeen > 0 && (System.currentTimeMillis() - lastSeen) <= NODE_TIMEOUT_MS;
+    }
+
+    private Protocol.PublicNodeInfo copyPublicNodeInfo(Protocol.PublicNodeInfo source) {
+        Protocol.PublicNodeInfo copy = new Protocol.PublicNodeInfo();
+        if (source == null) return copy;
+        copy.realId = source.realId;
+        copy.name = source.name;
+        copy.address = source.address;
+        copy.icon = source.icon;
+        copy.HOST_HOOK_PORT = source.HOST_HOOK_PORT;
+        copy.HOST_CONNECT_PORT = source.HOST_CONNECT_PORT;
+        copy.version = source.version;
+        copy.online = source.online;
+        copy.lastSeen = source.lastSeen;
+        copy.activeTunnels = source.activeTunnels;
+        return copy;
+    }
+
     private void disableService() {
-        publicNodesConfig = new ArrayList<>();
+        publicNodesConfig = Collections.emptyList();
+        nodeLastSeenMap.clear();
         isConfigured = false;
     }
 
@@ -109,32 +259,60 @@ public class NodeManager {
         return isConfigured;
     }
 
-    public void markNodeOnline(String realNodeId) {
+    public synchronized void markNodeOnline(String realNodeId) {
         if (realNodeId == null || realNodeId.isBlank()) return;
-        nodeLastSeenMap.put(realNodeId.toLowerCase().trim(), System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        String canonicalRealId = NodeAuthManager.getInstance().getCanonicalRealId(realNodeId);
+        String nodeKey = nodeKey(canonicalRealId == null ? realNodeId : canonicalRealId);
+        nodeLastSeenMap.put(nodeKey, now);
+
+        List<Protocol.PublicNodeInfo> nextConfig = new ArrayList<>();
+        boolean changed = false;
+        for (Protocol.PublicNodeInfo current : publicNodesConfig) {
+            Protocol.PublicNodeInfo copy = copyPublicNodeInfo(current);
+            if (nodeKey(copy.realId).equals(nodeKey)) {
+                copy.lastSeen = now;
+                copy.online = true;
+                changed = true;
+            } else {
+                copy.online = isNodeOnline(copy.realId);
+            }
+            nextConfig.add(copy);
+        }
+        if (changed) {
+            publicNodesConfig = Collections.unmodifiableList(nextConfig);
+        }
     }
 
     // [新增] 暴露给 Admin API 的查询接口：判断某节点是否在线
     public boolean isNodeOnline(String realNodeId) {
         if (realNodeId == null || realNodeId.isBlank()) return false;
-        Long lastSeen = nodeLastSeenMap.get(realNodeId.toLowerCase().trim());
+        Long lastSeen = nodeLastSeenMap.get(nodeKey(realNodeId));
         return lastSeen != null && (System.currentTimeMillis() - lastSeen) <= NODE_TIMEOUT_MS;
+    }
+
+    public Protocol.PublicNodeInfo getNodeInfo(String realNodeId) {
+        if (realNodeId == null || realNodeId.isBlank()) return null;
+        String expectedKey = nodeKey(realNodeId);
+        for (Protocol.PublicNodeInfo info : publicNodesConfig) {
+            if (nodeKey(info.realId).equals(expectedKey)) {
+                Protocol.PublicNodeInfo copy = copyPublicNodeInfo(info);
+                copy.online = isNodeOnline(copy.realId);
+                return copy;
+            }
+        }
+        return null;
     }
 
     public List<Protocol.PublicNodeInfo> getOnlinePublicNodes() {
         List<Protocol.PublicNodeInfo> result = new ArrayList<>();
         if (!isConfigured) return result;
 
-        List<Protocol.PublicNodeInfo> currentConfig = publicNodesConfig;
-        long now = System.currentTimeMillis();
-
-        for (Protocol.PublicNodeInfo info : currentConfig) {
-            String realNodeId = info.realId;
-            if (realNodeId == null || realNodeId.isBlank()) continue;
-
-            Long lastSeen = nodeLastSeenMap.get(realNodeId.toLowerCase().trim());
-            if (lastSeen != null && (now - lastSeen) <= NODE_TIMEOUT_MS) {
-                result.add(info);
+        for (Protocol.PublicNodeInfo info : publicNodesConfig) {
+            if (isNodeOnline(info.realId)) {
+                Protocol.PublicNodeInfo copy = copyPublicNodeInfo(info);
+                copy.online = true;
+                result.add(copy);
             }
         }
         return result;

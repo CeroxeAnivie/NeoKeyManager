@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>neoproxy.neokeymanager</groupId>
   <artifactId>NeoKeyManager</artifactId>
-  <version>4.0.7</version>
+  <version>4.1.3</version>
   <build>
     <plugins>
       <plugin>

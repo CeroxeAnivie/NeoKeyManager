@@ -159,8 +159,7 @@ public class Database {
             }
 
         } catch (Exception e) {
-            e.printStackTrace();
-            System.err.println("Database Init Failed. Missing sqlite-jdbc driver?");
+            ServerLogger.errorWithSource("Database", "nkm.db.initFail", e);
             System.exit(1);
         }
     }
@@ -217,7 +216,7 @@ public class Database {
             }
 
             if (hasOldCol) {
-                ServerLogger.warnWithSource("Database", "nkm.db.migrating", "Upgrading: is_enable -> status");
+                ServerLogger.warnWithSource("Database", "nkm.db.migrating", "is_enable", "status");
                 safeAddColumn(stmt, "keys", "status", "VARCHAR(20) DEFAULT 'ENABLED'");
 
                 // 使用 PreparedStatement 统一风格（尽管常量是安全的）

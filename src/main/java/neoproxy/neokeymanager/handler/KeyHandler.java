@@ -14,12 +14,15 @@ import neoproxy.neokeymanager.model.Protocol;
 import neoproxy.neokeymanager.utils.ServerLogger;
 import neoproxy.neokeymanager.utils.Utils;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 public class KeyHandler implements HttpHandler {
+    private static final int MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
     @Override
     public void handle(HttpExchange exchange) {
@@ -32,7 +35,12 @@ public class KeyHandler implements HttpHandler {
 
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
-            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            boolean expectsBody = (path.equals(Protocol.API_HEARTBEAT)
+                    || path.equals(Protocol.API_SYNC)
+                    || path.equals(Protocol.API_RELEASE)
+                    || path.equals(Protocol.API_NODE_STATUS))
+                    && "POST".equals(method);
+            String body = expectsBody ? readBody(exchange, MAX_REQUEST_BODY_BYTES) : "";
             SecurityManager.SignatureValidationResult signature =
                     SecurityManager.getInstance().validateSignature(exchange, body, Config.AUTH_TOKEN);
             if (!signature.valid()) {
@@ -48,12 +56,34 @@ public class KeyHandler implements HttpHandler {
             else if (path.equals(Protocol.API_CLIENT_UPDATE_URL) && "GET".equals(method))
                 handleClientUpdateUrl(exchange);
             else sendResponse(exchange, 404, new ApiError("Not Found", "Endpoint mismatch", null));
+        } catch (RequestTooLargeException e) {
+            try {
+                sendResponse(exchange, 413, new ApiError("Payload Too Large", e.getMessage(), null));
+            } catch (IOException ignored) {
+            }
         } catch (Exception e) {
             ServerLogger.error("API", "nkm.api.handleError", e);
             try {
                 sendResponse(exchange, 500, new ApiError("Internal Error", e.getMessage(), null));
             } catch (IOException ignored) {
             }
+        }
+    }
+
+    private String readBody(HttpExchange exchange, int maxBytes) throws IOException {
+        try (InputStream body = exchange.getRequestBody()) {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream(Math.min(8192, maxBytes));
+            byte[] chunk = new byte[4096];
+            int total = 0;
+            int read;
+            while ((read = body.read(chunk)) != -1) {
+                total += read;
+                if (total > maxBytes) {
+                    throw new RequestTooLargeException("Request body too large");
+                }
+                buffer.write(chunk, 0, read);
+            }
+            return buffer.toString(StandardCharsets.UTF_8);
         }
     }
 
@@ -170,7 +200,7 @@ public class KeyHandler implements HttpHandler {
         }
         String finalPort = reservation.port();
 
-        ServerLogger.info("nkm.api.access", realKeyName, nodeAlias, finalPort);
+        ServerLogger.info("nkm.api.access", requestName, nodeAlias, finalPort);
 
         // 真实 Key 仍用于扣费和端口分配，但会话身份必须保留客户端提交的 alias。
         // 否则 NAS 删除/过期体验版 alias 后，旧连接会继续以真实 Key 心跳而无法被回收。
@@ -310,7 +340,10 @@ public class KeyHandler implements HttpHandler {
             return;
         }
 
-        NodeManager.getInstance().markNodeOnline(payload.nodeId);
+        if (!NodeManager.getInstance().recordNodeStatus(payload)) {
+            sendResponse(exchange, 400, new ApiError("Invalid Payload", "Invalid node endpoint", null));
+            return;
+        }
         sendResponse(exchange, 200, Map.of("status", Protocol.STATUS_OK));
     }
 
@@ -321,6 +354,12 @@ public class KeyHandler implements HttpHandler {
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
+        }
+    }
+
+    private static final class RequestTooLargeException extends IOException {
+        private RequestTooLargeException(String message) {
+            super(message);
         }
     }
 }

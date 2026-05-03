@@ -38,12 +38,13 @@ build/
 ### Mac OS ###
 .DS_Store
 
-logs
+/logs/
 all_code.txt
-neokey_db-shm
-neokey_db-wal
-neokey_db
-server.properties
-NodeAuth.json
+/neokey_db
+/neokey_db-shm
+/neokey_db-wal
+/server.properties
+/NodeAuth.json
+/nodes.json
 !src/main/resources/templates/NodeAuth.json
 dependency-reduced-pom.xml

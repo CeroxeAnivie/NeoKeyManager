@@ -2,13 +2,19 @@ package neoproxy.neokeymanager.service;
 
 import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
+import neoproxy.neokeymanager.manager.NodeAuthManager;
+import neoproxy.neokeymanager.utils.ServerLogger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,10 +27,29 @@ class KeyServiceTest {
 
     private KeyService keyService;
     private String originalDbPath;
+    private Locale originalLocale;
+    private Path tempDir;
+    private String originalAuthFile;
 
     @BeforeEach
     void setUp() throws Exception {
         keyService = new KeyService();
+        originalLocale = Locale.getDefault();
+        ServerLogger.setLocale(Locale.SIMPLIFIED_CHINESE);
+        tempDir = Files.createTempDirectory("keyservice_test");
+        originalAuthFile = System.getProperty("node.auth.file", "NodeAuth.json");
+        System.setProperty("node.auth.file", tempDir.resolve("NodeAuth.json").toString());
+        Files.writeString(Path.of(System.getProperty("node.auth.file")),
+                """
+                        {
+                          "node1": {
+                            "realId": "node1",
+                            "displayName": "Node One"
+                          }
+                        }
+                        """,
+                StandardCharsets.UTF_8);
+        NodeAuthManager.resetInstance();
 
         // 保存原始数据库路径
         originalDbPath = Config.DB_PATH;
@@ -40,7 +65,20 @@ class KeyServiceTest {
     }
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws Exception {
+        ServerLogger.setLocale(originalLocale);
+        if (tempDir != null) {
+            Files.walk(tempDir)
+                    .sorted((a, b) -> -a.compareTo(b))
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                        }
+                    });
+        }
+        System.setProperty("node.auth.file", originalAuthFile);
+        NodeAuthManager.resetInstance();
         // 恢复原始数据库路径
         Config.DB_PATH = originalDbPath;
     }
@@ -544,18 +582,20 @@ class KeyServiceTest {
     }
 
     @Test
-    void testExecLinkKeyWithUnicode() {
+    void testExecLinkKeyRejectsUnicodeAlias() {
         keyService.execAddKey(Arrays.asList("unicodeReal", "100.0", "2030/12/31-23:59", "8080", "0.01"));
+        String expectedMessage = ServerLogger.getMessage("nkm.error.keyNameInvalid", "中文别名");
 
-        String result = keyService.execLinkKey(Arrays.asList("中文别名", "to", "unicodeReal"));
-
-        assertThat(result).contains("中文别名");
+        assertThatThrownBy(() -> keyService.execLinkKey(Arrays.asList("中文别名", "to", "unicodeReal")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(expectedMessage);
     }
 
     @Test
-    void testExecAddKeyWithUnicode() {
-        String result = keyService.execAddKey(Arrays.asList("中文密钥", "100.0", "2030/12/31-23:59", "8080", "0.01"));
-
-        assertThat(result).contains("中文密钥");
+    void testExecAddKeyRejectsUnicodeName() {
+        String expectedMessage = ServerLogger.getMessage("nkm.error.keyNameInvalid", "中文密钥");
+        assertThatThrownBy(() -> keyService.execAddKey(Arrays.asList("中文密钥", "100.0", "2030/12/31-23:59", "8080", "0.01")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(expectedMessage);
     }
 }

@@ -21,6 +21,7 @@ public class KeyService {
 
     private static final Pattern PORT_INPUT_REGEX = Pattern.compile("^(\\d+)(?:-(\\d+))?$");
     private static final Pattern TIME_INPUT_REGEX = Pattern.compile("^\\d{4}/\\d{2}/\\d{2}-\\d{2}:\\d{2}$");
+    private static final Pattern KEY_NAME_REGEX = Pattern.compile("^[A-Za-z0-9._:@+-]+$");
     private static final DateTimeFormatter TIME_FORMATTER = new DateTimeFormatterBuilder()
             .appendPattern("uuuu/MM/dd-HH:mm")
             .toFormatter()
@@ -33,8 +34,7 @@ public class KeyService {
             throw new IllegalArgumentException(ServerLogger.getMessage("nkm.usage.add"));
         }
 
-        String name = args.get(0).trim();
-        if (name.isEmpty()) throw new IllegalArgumentException("Key name cannot be empty");
+        String name = validateKeyName(args.get(0));
 
         if (Database.getRealKeyName(name) != null) {
             throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.keyExists", name));
@@ -111,7 +111,11 @@ public class KeyService {
                 newNameParam = getValue(param);
         }
 
-        if (newNameParam != null && !newNameParam.isBlank() && !newNameParam.equals(realName)) {
+        if (newNameParam != null) {
+            newNameParam = validateKeyName(newNameParam);
+        }
+
+        if (newNameParam != null && !newNameParam.equals(realName)) {
             if (Database.keyExists(newNameParam) || Database.isAlias(newNameParam)) {
                 throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.keyExists", newNameParam));
             }
@@ -375,7 +379,7 @@ public class KeyService {
             // 使用 nkm.usage.link
             throw new IllegalArgumentException(ServerLogger.getMessage("nkm.usage.link"));
         }
-        String alias = args.get(0);
+        String alias = validateKeyName(args.get(0));
         String target = args.get(2);
 
         if (Database.getRealKeyName(alias) != null) {
@@ -473,6 +477,14 @@ public class KeyService {
     }
 
     // ==================== 辅助方法 ====================
+
+    private String validateKeyName(String rawName) {
+        String name = rawName == null ? "" : rawName.trim();
+        if (name.isEmpty() || !KEY_NAME_REGEX.matcher(name).matches()) {
+            throw new IllegalArgumentException(ServerLogger.getMessage("nkm.error.keyNameInvalid", rawName));
+        }
+        return name;
+    }
 
     private String validateAndFormatPortInput(String portInput) {
         if (portInput == null || portInput.isBlank()) throw new IllegalArgumentException("Port cannot be empty");

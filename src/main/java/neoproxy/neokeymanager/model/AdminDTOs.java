@@ -50,11 +50,29 @@ public class AdminDTOs {
         public String realId;
         public String displayName;
         public boolean isOnline;
+        public String address;
+        public int hookPort;
+        public int connectPort;
+        public String version;
+        public int activeTunnels;
+        public long lastSeen;
 
         public NodeStatusDetail(String realId, String displayName, boolean isOnline) {
+            this(realId, displayName, isOnline, null, 0, 0, null, 0, 0L);
+        }
+
+        public NodeStatusDetail(String realId, String displayName, boolean isOnline,
+                                String address, int hookPort, int connectPort,
+                                String version, int activeTunnels, long lastSeen) {
             this.realId = realId;
             this.displayName = displayName;
             this.isOnline = isOnline;
+            this.address = address;
+            this.hookPort = hookPort;
+            this.connectPort = connectPort;
+            this.version = version;
+            this.activeTunnels = activeTunnels;
+            this.lastSeen = lastSeen;
         }
     }
 }

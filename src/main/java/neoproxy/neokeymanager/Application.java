@@ -5,7 +5,7 @@ import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
-import fun.ceroxe.api.utils.MyConsole;
+import top.ceroxe.api.utils.MyConsole;
 import neoproxy.neokeymanager.config.Config;
 import neoproxy.neokeymanager.database.Database;
 import neoproxy.neokeymanager.handler.AdminHandler;
@@ -215,7 +215,7 @@ public class Application {
                         yield null;
                     }
                 };
-                if (result != null) myConsole.log("KeyManager", result);
+                if (result != null) ServerLogger.logRaw("KeyManager", result);
             } catch (Exception e) {
                 ServerLogger.error("Command", "nkm.error.execFail", e);
             }
@@ -224,7 +224,7 @@ public class Application {
         myConsole.registerCommand("web", "Manage Web", args -> {
             try {
                 String res = keyService.execWeb(args);
-                myConsole.log("WebManager", res);
+                ServerLogger.logRaw("WebManager", res);
             } catch (Exception e) {
                 ServerLogger.error("WebManager", "nkm.error.execFail", e);
             }
@@ -235,21 +235,21 @@ public class Application {
     }
 
     private static void printKeyUsage() {
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
-        myConsole.log("Usage", "key setconn <key> <num> - Set max connections");
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
-        myConsole.log("Usage", "key delnode <nodeid> - Delete all mappings for a node");
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
-        myConsole.log("Usage", "key setsingle/delsingle/listsingle ... - Manage Single Mode");
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.cbm"));
-        myConsole.log("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.add"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.set"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.setconn"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.del"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.map"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.delmap"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.delnode"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.list"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.lp"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.toggle"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.web"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.link"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.help.single"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.cbm"));
+        ServerLogger.logRaw("Usage", ServerLogger.getMessage("nkm.usage.portNote"));
     }
 
     private static void handleLookupKey(List<String> args) {
@@ -421,7 +421,6 @@ public class Application {
                     sb.append(String.format(rowFmtKey, showName, usage, alias, portString)).append("\n");
                     isFirstNode = false;
                 } else {
-                    sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                     sb.append(String.format(rowFmtSub, "", "", alias, portString)).append("\n");
                 }
             }

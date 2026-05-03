@@ -5,8 +5,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Properties;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -93,7 +101,7 @@ class ServerLoggerTest {
     void testError() {
         ServerLogger.error("nkm.error.test");
 
-        String output = outContent.toString();
+        String output = errContent.toString();
         // 输出格式: [NeoKeyManager] !!! Key Not Found: nkm.error.test !!!
         assertThat(output).contains("[NeoKeyManager]");
     }
@@ -102,7 +110,7 @@ class ServerLoggerTest {
     void testErrorWithSource() {
         ServerLogger.errorWithSource("TestSource", "nkm.error.test");
 
-        String output = outContent.toString();
+        String output = errContent.toString();
         assertThat(output).contains("TestSource");
     }
 
@@ -246,5 +254,57 @@ class ServerLoggerTest {
         String output = errContent.toString();
         assertThat(output).contains("Outer");
         assertThat(output).contains("Inner");
+    }
+
+    @Test
+    void allProductionServerLoggerKeysExistInBothBundles() throws IOException {
+        Set<String> codeKeys = new TreeSet<>();
+        Pattern withSourcePattern = Pattern.compile(
+                "ServerLogger\\.(?:infoWithSource|warnWithSource|errorWithSource)\\(\"[^\"]+\"\\s*,\\s*\"([^\"]+)\"");
+        Pattern plainPattern = Pattern.compile(
+                "ServerLogger\\.(?:info|warn|error)\\((?:\"[^\"]+\"\\s*,\\s*)?\"([^\"]+)\"");
+        Pattern getMessagePattern = Pattern.compile(
+                "ServerLogger\\.getMessage\\(\"([^\"]+)\"");
+
+        try (var stream = Files.walk(Path.of("src/main/java"))) {
+            stream.filter(path -> path.toString().endsWith(".java")).forEach(path -> {
+                try {
+                    String content = Files.readString(path);
+                    collectMatches(codeKeys, withSourcePattern.matcher(content));
+                    collectMatches(codeKeys, plainPattern.matcher(content));
+                    collectMatches(codeKeys, getMessagePattern.matcher(content));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+
+        Properties en = new Properties();
+        Properties zh = new Properties();
+        try (var enStream = Files.newInputStream(Path.of("src/main/resources/messages_en.properties"));
+             var zhStream = Files.newInputStream(Path.of("src/main/resources/messages_zh.properties"))) {
+            en.load(enStream);
+            zh.load(zhStream);
+        }
+
+        Set<String> missingInEn = new TreeSet<>();
+        Set<String> missingInZh = new TreeSet<>();
+        for (String key : codeKeys) {
+            if (!en.containsKey(key)) {
+                missingInEn.add(key);
+            }
+            if (!zh.containsKey(key)) {
+                missingInZh.add(key);
+            }
+        }
+
+        assertThat(missingInEn).as("missing keys in messages_en.properties").isEmpty();
+        assertThat(missingInZh).as("missing keys in messages_zh.properties").isEmpty();
+    }
+
+    private static void collectMatches(Set<String> target, Matcher matcher) {
+        while (matcher.find()) {
+            target.add(matcher.group(1));
+        }
     }
 }
