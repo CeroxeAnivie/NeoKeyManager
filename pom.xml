@@ -47,7 +47,8 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-nop</artifactId>
-            <version>2.0.17</version>
+            <!-- sqlite-jdbc 3.45.x 仍使用 SLF4J 1.7 API；绑定版本必须同代，否则会在启动时寻找不到 StaticLoggerBinder。 -->
+            <version>1.7.36</version>
         </dependency>
 
         <!-- 测试依赖 -->

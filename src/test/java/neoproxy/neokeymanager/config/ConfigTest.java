@@ -232,7 +232,7 @@ class ConfigTest {
         assertThat(Config.PORT).isEqualTo(8080);
         assertThat(Config.AUTH_TOKEN).isEqualTo("nkm-node-token");
         assertThat(Config.ADMIN_TOKEN).isEqualTo("nkm-admin-token");
-        assertThat(Config.DB_PATH).isEqualTo("./neokey_db");
+        assertThat(Config.DB_PATH).isEqualTo("./data/neokey_db");
     }
 
     @Test
