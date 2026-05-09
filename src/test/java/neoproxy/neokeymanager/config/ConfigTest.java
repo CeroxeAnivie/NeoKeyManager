@@ -53,6 +53,7 @@ class ConfigTest {
         assertThat(Config.CLIENT_UPDATE_URL_JAR).isEmpty();
         assertThat(Config.DEFAULT_NODE).isEmpty();
         assertThat(Config.NODE_JSON_FILE).isEmpty();
+        assertThat(Config.NODELIST_RATE_LIMIT_PER_DAY).isEqualTo(10);
     }
 
     @Test
@@ -67,6 +68,7 @@ class ConfigTest {
             writer.write("CLIENT_UPDATE_URL_JAR=http://example.com/update.jar\n");
             writer.write("DEFAULT_NODE=node1\n");
             writer.write("NODE_JSON_FILE=nodes.json\n");
+            writer.write("NODELIST_RATE_LIMIT_PER_DAY=20\n");
         }
 
         Config.load();
@@ -79,6 +81,30 @@ class ConfigTest {
         assertThat(Config.CLIENT_UPDATE_URL_JAR).isEqualTo("http://example.com/update.jar");
         assertThat(Config.DEFAULT_NODE).isEqualTo("node1");
         assertThat(Config.NODE_JSON_FILE).isEqualTo("nodes.json");
+        assertThat(Config.NODELIST_RATE_LIMIT_PER_DAY).isEqualTo(20);
+    }
+
+    @Test
+    void testLoadZeroNodeListRateLimitDisablesLimiter() throws IOException {
+        try (FileWriter writer = new FileWriter(configFile)) {
+            writer.write("NODELIST_RATE_LIMIT_PER_DAY=0\n");
+        }
+
+        Config.load();
+
+        assertThat(Config.NODELIST_RATE_LIMIT_PER_DAY).isZero();
+    }
+
+    @Test
+    void testLoadInvalidNodeListRateLimitKeepsCurrentValue() throws IOException {
+        try (FileWriter writer = new FileWriter(configFile)) {
+            writer.write("NODELIST_RATE_LIMIT_PER_DAY=-1\n");
+        }
+
+        int originalLimit = Config.NODELIST_RATE_LIMIT_PER_DAY;
+        Config.load();
+
+        assertThat(Config.NODELIST_RATE_LIMIT_PER_DAY).isEqualTo(originalLimit);
     }
 
     @Test

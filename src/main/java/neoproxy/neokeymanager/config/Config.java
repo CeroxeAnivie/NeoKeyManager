@@ -27,6 +27,7 @@ public class Config {
     public static boolean CORS_ALLOW_CREDENTIALS = false;
 
     public static String NODE_JSON_FILE = "";
+    public static int NODELIST_RATE_LIMIT_PER_DAY = 10;
 
     public static void load() {
         load(true);
@@ -77,6 +78,20 @@ public class Config {
 
             String nodeJson = props.getProperty("NODE_JSON_FILE");
             if (nodeJson != null) NODE_JSON_FILE = nodeJson.trim();
+
+            String nodeListRateLimit = props.getProperty("NODELIST_RATE_LIMIT_PER_DAY");
+            if (nodeListRateLimit != null) {
+                try {
+                    int parsedLimit = Integer.parseInt(nodeListRateLimit.trim());
+                    if (parsedLimit < 0) {
+                        ServerLogger.warnWithSource("Config", "nkm.config.invalidNodeListRateLimit", NODELIST_RATE_LIMIT_PER_DAY);
+                    } else {
+                        NODELIST_RATE_LIMIT_PER_DAY = parsedLimit;
+                    }
+                } catch (NumberFormatException e) {
+                    ServerLogger.warnWithSource("Config", "nkm.config.invalidNodeListRateLimit", NODELIST_RATE_LIMIT_PER_DAY);
+                }
+            }
 
             String corsOrigins = props.getProperty("CORS_ALLOWED_ORIGINS");
             if (corsOrigins != null) CORS_ALLOWED_ORIGINS = corsOrigins.trim();
@@ -181,5 +196,6 @@ public class Config {
         CORS_ALLOWED_ORIGINS = "*";
         CORS_ALLOW_CREDENTIALS = false;
         NODE_JSON_FILE = "";
+        NODELIST_RATE_LIMIT_PER_DAY = 10;
     }
 }

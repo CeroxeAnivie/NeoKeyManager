@@ -1,4 +1,4 @@
-package neoproxy.neokeymanager.handler;
+﻿package neoproxy.neokeymanager.handler;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -41,7 +41,7 @@ public class ClientHandler implements HttpHandler {
         if (!NodeManager.getInstance().isConfigured()) {
             exchange.sendResponseHeaders(404, -1);
             exchange.close();
-            return; // 必须 return，防止向下执行返回 200
+            return; // 必须立即返回，防止继续执行后返回 200
         }
 
         String clientIp = IpRateLimiter.getClientIp(exchange);
@@ -68,3 +68,4 @@ public class ClientHandler implements HttpHandler {
         }
     }
 }
+

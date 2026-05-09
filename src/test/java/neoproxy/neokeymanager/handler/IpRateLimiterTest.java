@@ -2,6 +2,7 @@ package neoproxy.neokeymanager.handler;
 
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
+import neoproxy.neokeymanager.config.Config;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -27,6 +28,8 @@ class IpRateLimiterTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        Config.resetToDefaults();
+        IpRateLimiter.resetForTesting();
     }
 
     @Test
@@ -107,6 +110,26 @@ class IpRateLimiterTest {
 
         // 第 11 次应该被拒绝
         assertThat(IpRateLimiter.allow(ip)).isFalse();
+    }
+
+    @Test
+    void testAllowUsesConfiguredLimit() {
+        Config.NODELIST_RATE_LIMIT_PER_DAY = 2;
+        String ip = "192.168.1.4";
+
+        assertThat(IpRateLimiter.allow(ip)).isTrue();
+        assertThat(IpRateLimiter.allow(ip)).isTrue();
+        assertThat(IpRateLimiter.allow(ip)).isFalse();
+    }
+
+    @Test
+    void testAllowDisabledByConfig() {
+        Config.NODELIST_RATE_LIMIT_PER_DAY = 0;
+        String ip = "192.168.1.5";
+
+        for (int i = 0; i < 20; i++) {
+            assertThat(IpRateLimiter.allow(ip)).isTrue();
+        }
     }
 
     @Test

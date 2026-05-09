@@ -1,6 +1,7 @@
 package neoproxy.neokeymanager.handler;
 
 import com.sun.net.httpserver.HttpExchange;
+import neoproxy.neokeymanager.config.Config;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -11,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * 自动识别 Nginx/CDN 透传的真实 IP，并以天为单位限制请求次数
  */
 public class IpRateLimiter {
-    private static final int MAX_REQUESTS_PER_DAY = 10;
     private static final long WINDOW_MILLIS = 24L * 60L * 60L * 1000L;
     private static final ConcurrentHashMap<String, RateRecord> records = new ConcurrentHashMap<>();
 
@@ -54,6 +54,8 @@ public class IpRateLimiter {
 
     public static boolean allow(String ip) {
         if (ip == null || ip.isBlank()) return false;
+        int maxRequestsPerDay = Config.NODELIST_RATE_LIMIT_PER_DAY;
+        if (maxRequestsPerDay == 0) return true;
         long now = System.currentTimeMillis();
 
         RateRecord record = records.computeIfAbsent(ip, k -> new RateRecord());
@@ -62,12 +64,16 @@ public class IpRateLimiter {
             while (!record.requestTimes.isEmpty() && now - record.requestTimes.peekFirst() >= WINDOW_MILLIS) {
                 record.requestTimes.removeFirst();
             }
-            if (record.requestTimes.size() >= MAX_REQUESTS_PER_DAY) {
+            if (record.requestTimes.size() >= maxRequestsPerDay) {
                 return false;
             }
             record.requestTimes.addLast(now);
             return true;
         }
+    }
+
+    static void resetForTesting() {
+        records.clear();
     }
 
     private static class RateRecord {
